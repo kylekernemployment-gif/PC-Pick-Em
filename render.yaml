@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: pc-pick-em-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: GUILD_ID
+        sync: false
+      - key: PICKEM_CHANNEL_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: MOD_ROLE_NAME
+        value: Lead Moderator
+      - key: POINTS_PER_WIN
+        value: "100"
+      - key: POST_HOURS_BEFORE
+        value: "12"
+      - key: INCLUDE_PRESEASON
+        value: "false"
