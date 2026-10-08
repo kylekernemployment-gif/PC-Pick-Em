@@ -1,56 +1,55 @@
 import asyncio
 
 from db import Database
-from nba import Game, parse_boxscore, parse_espn, parse_schedule
+from nba import Game, parse_result, parse_schedule
 
-SCHEDULE = {"leagueSchedule": {"gameDates": [{"gameDate": "10/21/2026 00:00:00", "games": [
-    {"gameId": "0022600001", "gameStatus": 1, "gameStatusText": "7:30 pm ET",
-     "gameDateTimeUTC": "2026-10-21T23:30:00Z",
-     "awayTeam": {"teamCity": "Boston", "teamName": "Celtics", "teamTricode": "BOS", "wins": 0, "losses": 0},
-     "homeTeam": {"teamCity": "New York", "teamName": "Knicks", "teamTricode": "NYK", "wins": 0, "losses": 0}},
-    {"gameId": "0012600050", "gameStatus": 1, "gameStatusText": "7:00 pm ET",
-     "gameDateTimeUTC": "2026-10-10T23:00:00Z",
-     "awayTeam": {"teamCity": "Utah", "teamName": "Jazz", "teamTricode": "UTA"},
-     "homeTeam": {"teamCity": "Phoenix", "teamName": "Suns", "teamTricode": "PHX"}},
-    {"gameId": "0042600101", "gameStatus": 1, "gameStatusText": "TBD",
-     "gameDateTimeUTC": "2027-04-18T00:00:00Z",
-     "awayTeam": {"teamTricode": ""}, "homeTeam": {"teamTricode": ""}},
-    {"gameId": "0022600002", "gameStatus": 1, "gameStatusText": "PPD",
-     "gameDateTimeUTC": "2026-10-22T00:00:00Z",
-     "awayTeam": {"teamCity": "Golden State", "teamName": "Warriors", "teamTricode": "GSW", "wins": 1, "losses": 0},
-     "homeTeam": {"teamCity": "Los Angeles", "teamName": "Lakers", "teamTricode": "LAL", "wins": 0, "losses": 1}},
-]}]}}
+
+def _event(eid, season_type, when, away, home, status="STATUS_SCHEDULED", state="pre",
+           completed=False, scores=("0", "0"), records=True, time_valid=True):
+    def team(abbr, name, side, score):
+        c = {"homeAway": side, "score": score, "team": {"abbreviation": abbr, "displayName": name}}
+        if records:
+            c["records"] = [{"name": "overall", "summary": "1-0"}]
+        return c
+    return {"id": eid, "date": when, "name": f"{away[1]} at {home[1]}", "season": {"type": season_type},
+            "competitions": [{"date": when, "timeValid": time_valid,
+                              "status": {"type": {"name": status, "state": state, "completed": completed}},
+                              "competitors": [team(*home, "home", scores[1]), team(*away, "away", scores[0])]}]}
+
+
+SCOREBOARD = {"events": [
+    _event("401", 2, "2026-10-21T23:30Z", ("BOS", "Boston Celtics"), ("NY", "New York Knicks")),
+    _event("402", 1, "2026-10-08T23:00Z", ("UTAH", "Utah Jazz"), ("PHX", "Phoenix Suns"), records=False),
+    _event("403", 2, "2026-10-22T00:00Z", ("GS", "Golden State Warriors"), ("LAL", "Los Angeles Lakers"),
+           status="STATUS_POSTPONED"),
+    _event("404", 3, "2027-04-18T00:00Z", ("OKC", "Oklahoma City Thunder"), ("DEN", "Denver Nuggets"),
+           time_valid=False),
+]}
 
 
 def test_parse_schedule():
-    games = parse_schedule(SCHEDULE)
-    assert [g.game_id for g in games] == ["0022600001", "0022600002"]
-    g = games[0]
+    games = {g.game_id: g for g in parse_schedule(SCOREBOARD)}
+    assert sorted(games) == ["401", "403", "404"]  # preseason excluded
+    g = games["401"]
     assert (g.away_tri, g.home_tri, g.away_name, g.home_name) == ("BOS", "NYK", "Boston Celtics", "New York Knicks")
-    assert g.tip_utc == 1792625400
-    assert games[1].postponed and not games[0].postponed
-    assert len(parse_schedule(SCHEDULE, include_preseason=True)) == 3
+    assert g.tip_utc == 1792625400 and g.away_record == "1-0"
+    assert games["403"].postponed and not g.postponed
+    assert games["404"].time_tbd and not g.time_tbd
+    pre = {g.game_id: g for g in parse_schedule(SCOREBOARD, include_preseason=True)}["402"]
+    assert (pre.away_tri, pre.home_tri, pre.away_record) == ("UTA", "PHX", "")
 
 
-def test_parse_boxscore():
-    r = parse_boxscore({"game": {"gameStatus": 3, "gameStatusText": "Final",
-                                 "awayTeam": {"score": 101}, "homeTeam": {"score": 99}}})
+def test_parse_result():
+    final = {"events": [_event("401", 2, "2026-10-21T23:30Z", ("BOS", "B"), ("NY", "N"),
+                               status="STATUS_FINAL", state="post", completed=True, scores=("101", "99"))]}
+    r = parse_result(final, "401")
     assert r.final and (r.away_score, r.home_score) == (101, 99)
-    assert not parse_boxscore({"game": {"gameStatus": 2, "gameStatusText": "Q4 2:00",
-                                        "awayTeam": {"score": 90}, "homeTeam": {"score": 88}}}).final
-    assert parse_boxscore(None) is None
-
-
-def test_parse_espn():
-    data = {"events": [{"competitions": [{
-        "status": {"type": {"name": "STATUS_FINAL", "state": "post", "completed": True}},
-        "competitors": [
-            {"homeAway": "home", "score": "110", "team": {"abbreviation": "GS"}},
-            {"homeAway": "away", "score": "104", "team": {"abbreviation": "LAL"}},
-        ]}]}]}
-    r = parse_espn(data, "LAL", "GSW")
-    assert r.final and (r.away_score, r.home_score) == (104, 110)
-    assert parse_espn(data, "BOS", "GSW") is None
+    live = {"events": [_event("401", 2, "2026-10-21T23:30Z", ("BOS", "B"), ("NY", "N"),
+                              status="STATUS_IN_PROGRESS", state="in", scores=("50", "48"))]}
+    assert not parse_result(live, "401").final
+    assert parse_result(SCOREBOARD, "403").postponed
+    assert parse_result(final, "999") is None
+    assert parse_result(None, "401") is None
 
 
 def test_full_game_flow(tmp_path):

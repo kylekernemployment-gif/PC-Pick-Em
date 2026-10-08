@@ -126,8 +126,8 @@ def poll_embed(game: dict, picks: int | None = None) -> discord.Embed:
     away, home, tip = game["away_name"], game["home_name"], game["tip_utc"]
     status = game["status"]
     lines = [
-        f"{ONE}  **{away}** ({game['away_record']})",
-        f"{TWO}  **{home}** ({game['home_record']})",
+        f"{ONE}  **{away}**" + (f" ({game['away_record']})" if game["away_record"] else ""),
+        f"{TWO}  **{home}**" + (f" ({game['home_record']})" if game["home_record"] else ""),
         "",
         f"🕒 Tip-off: <t:{tip}:F> (<t:{tip}:R>)",
     ]
