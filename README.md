@@ -2,7 +2,7 @@
 
 A Discord bot that runs a daily NBA pick'em for one server.
 
-- **12 hours before every NBA game** it posts a poll in your pick'em channel and pre-reacts with 1️⃣ (away team) and 2️⃣ (home team).
+- **12 hours before every NBA game (preseason included)** it posts a poll in your pick'em channel and pre-reacts with 1️⃣ (away team) and 2️⃣ (home team).
 - Members can only pick **one** team. Reacting to the second one removes it and shows *"You must only react for one team!"*. To switch, remove your first reaction, then click the other one.
 - **At tip-off the poll locks.** Late reactions are removed.
 - When the game goes **Final**, everyone who picked the winner gets **+100 PC Points** and the bot posts the result.
@@ -61,7 +61,7 @@ Check the logs. You should see `Logged in as PC Pick Em'...`, `Synced 1 slash co
 | `MOD_ROLE_NAME` | `Lead Moderator` | role allowed to use `/givepcpoints` |
 | `POINTS_PER_WIN` | `100` | |
 | `POST_HOURS_BEFORE` | `12` | |
-| `INCLUDE_PRESEASON` | `false` | set to `true` to run polls for preseason games too |
+| `INCLUDE_PRESEASON` | `true` | polls for preseason games too (good for testing). Set to `false` to only do regular season + playoffs |
 
 ## Running locally
 ```bash

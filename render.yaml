@@ -25,4 +25,4 @@ services:
       - key: POST_HOURS_BEFORE
         value: "12"
       - key: INCLUDE_PRESEASON
-        value: "false"
+        value: "true"

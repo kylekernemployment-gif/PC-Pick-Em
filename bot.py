@@ -31,7 +31,7 @@ CHANNEL_ID = int(os.environ["PICKEM_CHANNEL_ID"])
 MOD_ROLE = os.getenv("MOD_ROLE_NAME", "Lead Moderator")
 POINTS_PER_WIN = int(os.getenv("POINTS_PER_WIN", "100"))
 POST_HOURS_BEFORE = float(os.getenv("POST_HOURS_BEFORE", "12"))
-INCLUDE_PRESEASON = _env_bool("INCLUDE_PRESEASON")
+INCLUDE_PRESEASON = _env_bool("INCLUDE_PRESEASON", "true")
 DATABASE_URL = os.getenv("DATABASE_URL") or None
 DB_PATH = os.getenv("DB_PATH", "pickem.db")
 
