@@ -25,14 +25,39 @@ def _env_bool(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
-TOKEN = os.environ["DISCORD_TOKEN"]
-GUILD_ID = int(os.environ["GUILD_ID"])
-CHANNEL_ID = int(os.environ["PICKEM_CHANNEL_ID"])
+def _required(name: str) -> str:
+    value = os.getenv(name, "").strip().strip("'\"").strip()
+    if not value:
+        raise SystemExit(f"Missing environment variable {name}. Add it in Render -> Environment.")
+    return value
+
+
+def _required_id(name: str) -> int:
+    value = _required(name)
+    if not value.isdigit():
+        raise SystemExit(f"{name} must be a number (right-click -> Copy ID in Discord), got {value!r}")
+    return int(value)
+
+
+def _database_url() -> str | None:
+    # Accept what Neon's "Connect" box shows, e.g. psql 'postgresql://...'
+    url = os.getenv("DATABASE_URL", "").strip()
+    if url.lower().startswith("psql"):
+        url = url[4:].strip()
+    url = url.strip("'\"").strip()
+    if url and not url.startswith(("postgres://", "postgresql://")):
+        raise SystemExit("DATABASE_URL should start with postgresql:// (copy it from Neon -> Connect)")
+    return url or None
+
+
+TOKEN = _required("DISCORD_TOKEN")
+GUILD_ID = _required_id("GUILD_ID")
+CHANNEL_ID = _required_id("PICKEM_CHANNEL_ID")
 MOD_ROLE = os.getenv("MOD_ROLE_NAME", "Lead Moderator")
 POINTS_PER_WIN = int(os.getenv("POINTS_PER_WIN", "100"))
 POST_HOURS_BEFORE = float(os.getenv("POST_HOURS_BEFORE", "12"))
 INCLUDE_PRESEASON = _env_bool("INCLUDE_PRESEASON", "true")
-DATABASE_URL = os.getenv("DATABASE_URL") or None
+DATABASE_URL = _database_url()
 DB_PATH = os.getenv("DB_PATH", "pickem.db")
 
 SCHEDULE_REFRESH_SECS = 60 * 60     # re-read the NBA schedule hourly
@@ -66,9 +91,13 @@ class PickEmBot(commands.Bot):
         log.info("Database ready (%s)", "Postgres" if self.db.pg else f"SQLite: {DB_PATH}")
         self.http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
         self.nba = NBAClient(self.http_session, INCLUDE_PRESEASON)
-        await start_web_server()
-        synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-        log.info("Synced %d slash command(s)", len(synced))
+        try:
+            synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+            log.info("Synced %d slash command(s)", len(synced))
+        except discord.Forbidden:
+            # The rest of the bot still works; only /givepcpoints is missing.
+            log.error("Couldn't register /givepcpoints (Missing Access). Re-invite the bot with the "
+                      "'bot' AND 'applications.commands' scopes, and check GUILD_ID is your server ID.")
         ticker.start()
 
     async def close(self) -> None:
@@ -517,5 +546,19 @@ async def start_web_server() -> None:
     log.info("Health server listening on :%s", port)
 
 
+async def main() -> None:
+    # Open the port first so Render sees the service as up even while logging in.
+    await start_web_server()
+    async with bot:
+        try:
+            await bot.start(TOKEN)
+        except discord.LoginFailure:
+            raise SystemExit("DISCORD_TOKEN is invalid. Reset it in the Discord developer portal "
+                             "and paste the new one into Render.")
+        except discord.PrivilegedIntentsRequired:
+            raise SystemExit("Turn on 'Message Content Intent' in the Discord developer portal "
+                             "(Bot page), save, then redeploy.")
+
+
 if __name__ == "__main__":
-    bot.run(TOKEN, log_handler=None)
+    asyncio.run(main())
