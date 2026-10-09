@@ -143,7 +143,7 @@ This is on by default (`EIGHTYTWO=false` turns it off). It's for YouTube Members
 2. Draft a player from that roster.
 3. Put him at an open position he actually played (PG, SG, SF, PF and C, each used once).
 
-A player's stats are his per-game averages **with that team in that decade**: every season there, weighted by games played.
+A player's stats are his per-game averages **with that team in that decade**: every season there, weighted by games played. His **awards** come from the same stint (MVP, DPOY, All-NBA, All-Defense, All-Star, ROY, 6MOY, MIP). Awards show while drafting in Classic, and they count toward the score: defensive honors boost team defense, and MVP/All-NBA/All-Star honors give a smaller overall boost.
 
 You get **one team skip and one decade skip** per game. Old franchises count as today's team, so the 1990s Thunder are the Seattle SuperSonics.
 

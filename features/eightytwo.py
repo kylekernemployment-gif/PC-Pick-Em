@@ -2,6 +2,7 @@
 
 Modes: Classic (stats shown while drafting) and Hoop IQ (stats hidden).
 Each game: 5 picks (PG/SG/SF/PF/C, each once), 1 team skip, 1 decade skip.
+Players use their per-game averages and awards with that team in that decade.
 Going 82-0 pays PC Points once per member per day.
 """
 
@@ -33,7 +34,7 @@ TARGETS = {"pts": 125, "reb": 46, "ast": 30, "stl": 8.5, "blk": 7.5}
 WEIGHTS = {"pts": 0.32, "reb": 0.20, "ast": 0.20, "stl": 0.12, "blk": 0.16}
 # Rating -> wins (piecewise linear). Calibrated by simulation: random picks average ~25 wins,
 # sensible picks ~62, and only great, balanced lineups reach 82-0.
-WIN_CURVE = [(0.08, 0), (0.233, 25), (0.734, 62), (0.876, 82)]
+WIN_CURVE = [(0.08, 0), (0.235, 25), (0.756, 62), (0.909, 82)]
 MAX_OPTIONS = 25  # Discord select menu limit
 EASTERN = ZoneInfo("America/New_York")
 
@@ -92,8 +93,39 @@ def spin(rng: random.Random, open_positions: set[str], taken: set[str],
     raise RuntimeError("No draftable players left")
 
 
+# Awards won with that team in that decade, per season there. Defensive honors
+# add to steals/blocks (box scores undersell defenders); star honors add a small
+# overall bonus. Kept modest so the stats still decide most of the record.
+STAR_WEIGHTS = {"mvp": 3.0, "nba1": 1.5, "nba2": 1.0, "nba3": 0.6, "as": 0.3}
+DEF_WEIGHTS = {"dpoy": 2.0, "def1": 1.0, "def2": 0.6}
+STAR_BONUS, DEF_BONUS = 0.004, 0.25  # rating per star point; stl & blk per defense point
+
+
+def star_rate(p: dict) -> float:
+    a = p.get("awards") or {}
+    return min(sum(w * a.get(k, 0) for k, w in STAR_WEIGHTS.items()) / max(p.get("seasons", 1), 1), 4.0)
+
+
+def def_rate(p: dict) -> float:
+    a = p.get("awards") or {}
+    return min(sum(w * a.get(k, 0) for k, w in DEF_WEIGHTS.items()) / max(p.get("seasons", 1), 1), 3.0)
+
+
 def player_value(p: dict) -> float:
-    return sum(WEIGHTS[c] * p[f"adj_{c}"] / TARGETS[c] for c in CATS)
+    stats = {c: p[f"adj_{c}"] + (DEF_BONUS * def_rate(p) if c in ("stl", "blk") else 0) for c in CATS}
+    return sum(WEIGHTS[c] * stats[c] / TARGETS[c] for c in CATS) + STAR_BONUS * star_rate(p)
+
+
+AWARD_ORDER = [("mvp", "MVP"), ("dpoy", "DPOY"), ("allnba", "All-NBA"), ("alldef", "All-Def"),
+               ("as", "All-Star"), ("roy", "ROY"), ("smoy", "6MOY"), ("mip", "MIP")]
+
+
+def award_text(p: dict, limit: int | None = None) -> str:
+    a = dict(p.get("awards") or {})
+    a["allnba"] = a.get("nba1", 0) + a.get("nba2", 0) + a.get("nba3", 0)
+    a["alldef"] = a.get("def1", 0) + a.get("def2", 0)
+    parts = [f"{a[k]}× {label}" if a[k] > 1 else label for k, label in AWARD_ORDER if a.get(k)]
+    return " · ".join(parts[:limit] if limit else parts)
 
 
 def wins_for(rating: float) -> int:
@@ -112,17 +144,25 @@ def grade_for(wins: int) -> str:
     return "F"
 
 
-def evaluate(lineup: dict[str, dict]) -> dict:
+def lineup_rating(lineup: dict[str, dict]) -> tuple[float, dict[str, float], dict[str, float]]:
+    """(rating, category scores, era-adjusted team totals)."""
     totals = {c: sum(p[f"adj_{c}"] for p in lineup.values()) for c in CATS}
-    scores = {c: min(totals[c] / TARGETS[c], 1.15) for c in CATS}
-    rating = sum(WEIGHTS[c] * scores[c] for c in CATS)
+    defense = sum(def_rate(p) for p in lineup.values()) * DEF_BONUS
+    scored = {c: totals[c] + (defense if c in ("stl", "blk") else 0) for c in CATS}
+    scores = {c: min(scored[c] / TARGETS[c], 1.15) for c in CATS}
+    rating = sum(WEIGHTS[c] * scores[c] for c in CATS) + STAR_BONUS * sum(star_rate(p) for p in lineup.values())
     weakest = min(scores, key=scores.get)
     if scores[weakest] < 0.7:  # a glaring hole drags the whole team down
         rating -= 0.35 * (0.7 - scores[weakest])
+    return rating, scores, totals
+
+
+def evaluate(lineup: dict[str, dict]) -> dict:
+    rating, scores, totals = lineup_rating(lineup)
     wins = wins_for(rating)
     best = max(lineup.items(), key=lambda kv: player_value(kv[1]))
     return {"wins": wins, "losses": 82 - wins, "grade": grade_for(wins), "totals": totals,
-            "best": best, "weakness": CAT_NAMES[weakest] if wins < 82 else None}
+            "best": best, "weakness": CAT_NAMES[min(scores, key=scores.get)] if wins < 82 else None}
 
 
 def stat_line(p: dict) -> str:
@@ -187,6 +227,8 @@ def lineup_lines(game: Game, reveal: bool) -> list[str]:
         line = f"`{pos:<2}` **{p['name']}** · {p['era_team']} {p['season']}"
         if reveal:
             line += f"\n      {stat_line(p)}"
+            if award_text(p):
+                line += f"\n      🏆 {award_text(p)}"
         lines.append(line)
     return lines
 
@@ -268,8 +310,13 @@ class GameView(discord.ui.View):
             self.add_item(self._button("Skip decade", "⏭️", discord.ButtonStyle.secondary, self.on_skip_decade))
 
     def _option(self, i: int, p: dict) -> discord.SelectOption:
-        desc = f"{p['season']} · {stat_line(p)}" if self.game.mode == "classic" else "Stats hidden — trust your hoop IQ"
-        return discord.SelectOption(label=f"{p['name']} ({p['pos']})"[:100], value=str(i), description=desc[:100])
+        if self.game.mode == "classic":
+            awards = award_text(p, limit=2)
+            label = f"{p['name']} ({p['pos']})" + (f" · 🏆 {awards}" if awards else "")
+            desc = f"{p['season']} · {stat_line(p)}"
+        else:
+            label, desc = f"{p['name']} ({p['pos']})", "Stats and awards hidden — trust your hoop IQ"
+        return discord.SelectOption(label=label[:100], value=str(i), description=desc[:100])
 
     @staticmethod
     def _button(label, emoji, style, cb) -> discord.ui.Button:

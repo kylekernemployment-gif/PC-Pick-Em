@@ -42,7 +42,7 @@ def test_full_game_and_scoring():
 
 
 def test_win_curve_and_grades():
-    assert E.wins_for(0.05) == 0 and E.wins_for(2) == 82 and E.wins_for(0.233) == 25
+    assert E.wins_for(0.05) == 0 and E.wins_for(2) == 82 and E.wins_for(0.235) == 25
     assert E.grade_for(82).startswith("S") and E.grade_for(70) == "A" and E.grade_for(10) == "F"
 
 
@@ -52,3 +52,14 @@ def test_dream_team_can_go_82_0():
               "SF": pick("BOS", "1980s", "Larry Bird"), "PF": pick("SAS", "2000s", "Tim Duncan"),
               "C": pick("HOU", "1990s", "Hakeem Olajuwon")}
     assert E.evaluate(lineup)["wins"] == 82
+
+
+def test_awards_follow_the_team_and_count():
+    find = lambda t, d, n: next(p for p in E.data()["teams"][t]["decades"][d]["players"] if p["name"] == n)
+    heat, cavs = find("MIA", "2010s", "LeBron James"), find("CLE", "2010s", "LeBron James")
+    assert heat["awards"]["mvp"] == 2 and "mvp" not in cavs["awards"]
+    assert E.award_text(heat).startswith("2× MVP")
+    wallace = find("DET", "2000s", "Ben Wallace")
+    assert E.def_rate(wallace) > 1.5  # 4x DPOY, 5x All-Defense
+    no_awards = {**wallace, "awards": {}}
+    assert E.player_value(wallace) > E.player_value(no_awards)

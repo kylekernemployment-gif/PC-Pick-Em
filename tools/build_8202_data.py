@@ -103,6 +103,32 @@ def main(src: Path, out: Path) -> None:
     stl_coef = fit("stl", ["ast_per_game", "mp_per_game"])
     blk_coef = fit("blk", ["trb_per_game", "mp_per_game"])
 
+    # Awards, credited to the franchise a player spent most of that season with.
+    main_team: dict[tuple[str, int], tuple[float, str]] = {}
+    for r in rows:
+        key, g = (r["player_id"], int(r["season"])), f(r["g"]) or 0
+        if g > main_team.get(key, (-1, ""))[0]:
+            main_team[key] = (g, FRANCHISE[r["team"]])
+    awards: dict[tuple[str, str, str], dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+    def credit(pid: str, season: int, kind: str) -> None:
+        if (pid, season) in main_team and 1961 <= season:
+            awards[(pid, main_team[(pid, season)][1], decade_of(season))][kind] += 1
+
+    award_kinds = {"nba mvp": "mvp", "nba dpoy": "dpoy", "nba roy": "roy", "nba smoy": "smoy", "nba mip": "mip"}
+    for r in csv.DictReader(open(src / "Player Award Shares.csv")):
+        if r["award"] in award_kinds and r["winner"] == "TRUE":
+            credit(r["player_id"], int(r["season"]), award_kinds[r["award"]])
+    team_kinds = {("All-NBA", "1st"): "nba1", ("All-NBA", "2nd"): "nba2", ("All-NBA", "3rd"): "nba3",
+                  ("All-Defense", "1st"): "def1", ("All-Defense", "2nd"): "def2"}
+    for r in csv.DictReader(open(src / "End of Season Teams.csv")):
+        kind = team_kinds.get((r["type"], r["number_tm"]))
+        if r["lg"] == "NBA" and kind:
+            credit(r["player_id"], int(r["season"]), kind)
+    for r in csv.DictReader(open(src / "All-Star Selections.csv")):
+        if r["lg"] == "NBA":
+            credit(r["player_id"], int(r["season"]), "as")
+
     career_pos: dict[str, set[str]] = defaultdict(set)
     for r in rows:
         if r["pos"] in ("PG", "SG", "SF", "PF", "C"):
@@ -155,6 +181,7 @@ def main(src: Path, out: Path) -> None:
                 *[round(avg("raw", k), 1) for k in STATS],
                 *[round(avg("adj", k), 2) for k in STATS],
                 int(any(x["est"] for x in seasons)), int(games),
+                len({x["season"] for x in seasons}), dict(awards.get((pid, fr, dec), {})),
             ]))
         entries.sort(key=lambda e: -e[0])
         if len(entries) < 5:
@@ -171,7 +198,7 @@ def main(src: Path, out: Path) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "fields": ["name", "pos", "season", "pts", "reb", "ast", "stl", "blk",
-                   "adj_pts", "adj_reb", "adj_ast", "adj_stl", "adj_blk", "est", "games"],
+                   "adj_pts", "adj_reb", "adj_ast", "adj_stl", "adj_blk", "est", "games", "seasons", "awards"],
         "decades": DECADES,
         "teams": teams,
         "source": "Basketball-Reference via github.com/sumitrodatta/bball-reference-datasets",
