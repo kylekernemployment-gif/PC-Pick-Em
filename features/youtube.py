@@ -7,8 +7,10 @@ YOUTUBE_UPLOAD_CHANNEL_ID is set, ping the YouTube Alerts role there.
 
 from __future__ import annotations
 
+import json
 import os
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord.ext import commands, tasks
@@ -22,7 +24,9 @@ PLAYLIST_ITEMS_API = "https://www.googleapis.com/youtube/v3/playlistItems"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 NS = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
-SEEN_KEY = "youtube_last_video_id"
+SEEN_KEY = "youtube_last_video_id"     # first-run marker (and the old single-ID format)
+SEEN_IDS_KEY = "youtube_seen_video_ids"  # every video already handled, newest last
+UPLOAD_MAX_AGE_HOURS = 6                 # never announce an upload older than this
 
 
 def parse_latest_video_id(xml_text: str) -> str | None:
@@ -63,7 +67,17 @@ def parse_video_status(data: dict, video_id: str) -> dict:
         "status": "upload",
         "title": snippet.get("title", ""),
         "url": f"https://www.youtube.com/watch?v={video_id}",
+        "published": snippet.get("publishedAt", ""),
     }
+
+
+def is_recent(published: str, max_age_hours: float) -> bool:
+    """True if an ISO timestamp like 2026-10-09T21:00:00Z is within the last max_age_hours."""
+    try:
+        when = datetime.fromisoformat(published.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) - when <= timedelta(hours=max_age_hours)
 
 
 def is_configured() -> bool:
@@ -153,33 +167,49 @@ class YouTubeLive(commands.Cog):
         except Exception:  # keep the loop alive no matter what
             log.exception("[YouTube] check failed")
 
+    async def _seen(self) -> list[str]:
+        raw = await self.bot.db.get_setting(SEEN_IDS_KEY)
+        if raw:
+            return json.loads(raw)
+        legacy = await self.bot.db.get_setting(SEEN_KEY)
+        return [legacy] if legacy else []
+
+    async def _mark_seen(self, video_id: str) -> None:
+        seen = [v for v in await self._seen() if v != video_id] + [video_id]
+        await self.bot.db.set_setting(SEEN_IDS_KEY, json.dumps(seen[-100:]))
+        await self.bot.db.set_setting(SEEN_KEY, video_id)
+
     async def _check(self) -> None:
         video_id = await self.latest_video_id()
         if not video_id:
             return
-        last_seen = await self.bot.db.get_setting(SEEN_KEY)
-        if last_seen is None:
+        if await self.bot.db.get_setting(SEEN_KEY) is None:
             # First run: don't announce whatever is already up (matches the old bot).
-            await self.bot.db.set_setting(SEEN_KEY, video_id)
+            await self._mark_seen(video_id)
             log.info("[YouTube] Watching for new live streams (latest video %s)", video_id)
             return
-        if video_id == last_seen:
+        # Remember every video handled, not just the last one: the RSS feed and the API
+        # can disagree about which video is newest, which must never cause a repeat ping.
+        if video_id in await self._seen():
             return
         result = await self.video_status(video_id)
         if result is None:
             return  # API hiccup: try again next cycle
         if result["status"] == "live":
             if await self.notify(result):
-                await self.bot.db.set_setting(SEEN_KEY, video_id)
+                await self._mark_seen(video_id)
                 log.info("[YouTube] Live notification sent for %s", video_id)
         elif result["status"] == "upcoming":
             log.info("[YouTube] %s is scheduled; waiting for it to go live", video_id)
-        elif result["status"] == "upload" and self.upload_channel_id:
+        elif (result["status"] == "upload" and self.upload_channel_id
+              and is_recent(result.get("published", ""), UPLOAD_MAX_AGE_HOURS)):
             if await self.notify_upload(result):
-                await self.bot.db.set_setting(SEEN_KEY, video_id)
+                await self._mark_seen(video_id)
                 log.info("[YouTube] Upload alert sent for %s", video_id)
         else:
-            await self.bot.db.set_setting(SEEN_KEY, video_id)  # stream replay, or upload alerts off
+            # Stream replay, an older video, or upload alerts off: remember it, no ping.
+            await self._mark_seen(video_id)
+            log.info("[YouTube] %s skipped (%s)", video_id, result["status"])
 
     @check.before_loop
     async def before_check(self) -> None:
