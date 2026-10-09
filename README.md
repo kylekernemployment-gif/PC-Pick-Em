@@ -6,6 +6,7 @@ One Discord bot for the PC server:
 - **Reaction roles** (merged from the PC-Roles bot)
 - **YouTube live notifications** (merged from the PC-YT-Live-Noti bot)
 - **Captcha verification** for new members, plus an **anti-scam** filter
+- **82-0**: spin a team and decade, draft an all-time starting five, chase a perfect season
 
 Each extra feature turns on only when its settings are added in Render. See [Other features](#other-features).
 
@@ -133,4 +134,18 @@ New members get 3 tries and 30 minutes. Accounts younger than 3 days are removed
 
 ### Anti-scam
 This is on by default (`ANTI_SCAM=false` turns it off). It deletes free-Nitro, Steam-gift and fake-Discord-link messages and times the sender out for 1 hour. Members who joined in the last 24 hours can't post links (`NEW_MEMBER_LINK_HOURS`). Mods and anyone with Manage Messages are skipped. The bot needs **Manage Messages** and **Moderate Members**.
+
+### 82-0
+This is on by default (`EIGHTYTWO=false` turns it off). It's for YouTube Members and Lead Moderators only.
+
+`/82-0 mode:` pick **Classic** (stats shown while drafting) or **Hoop IQ** (stats hidden). Each game:
+1. **🎰 Spin** to get a team and decade (1960s through 2020s; decades can repeat).
+2. Draft a player from that roster.
+3. Put him at an open position he actually played (PG, SG, SF, PF and C, each used once).
+
+You get **one team skip and one decade skip** per game. Old franchises count as today's team, so the 1990s Thunder are the Seattle SuperSonics.
+
+After 5 picks the bot rates the lineup on era-adjusted scoring, rebounding, playmaking, steals and blocks. It then shows a projected record, a grade, the best pick and the biggest weakness. Going **82-0 earns +50 PC Points**, once per member per day (`EIGHTYTWO_POINTS`). Set `EIGHTYTWO_CHANNEL_ID` to limit games to one channel.
+
+Player data comes from Basketball-Reference, via [sumitrodatta/bball-reference-datasets](https://github.com/sumitrodatta/bball-reference-datasets). It's bundled in `features/data/` and rebuilt with `tools/build_8202_data.py`. Steals and blocks weren't tracked before 1973-74, so those are estimated (marked `*`).
 

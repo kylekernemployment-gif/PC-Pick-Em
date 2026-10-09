@@ -16,7 +16,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from db import Database
-from features import antiscam, verify, youtube
+from features import antiscam, eightytwo, verify, youtube
 from features.roles import ReactionRoles
 from nba import EASTERN, NBAClient
 
@@ -127,8 +127,14 @@ class PickEmBot(commands.Bot):
             await self.add_cog(verify.Verification(self, GUILD_ID, MOD_ROLE), guild=guild)
         else:
             log.info("Captcha verification off (set VERIFY_CHANNEL_ID to turn on)")
+        if _env_bool("EIGHTYTWO", "true"):
+            await self.add_cog(eightytwo.EightyTwoZero(self, MEMBER_ROLE, MOD_ROLE), guild=guild)
         if antiscam.is_enabled():
             await self.add_cog(antiscam.AntiScam(self, GUILD_ID, MOD_ROLE), guild=guild)
+
+    async def points_changed(self) -> None:
+        """Features call this after changing PC Points so the live leaderboard updates."""
+        await refresh_board_soon()
 
     async def close(self) -> None:
         if self.http_session:
