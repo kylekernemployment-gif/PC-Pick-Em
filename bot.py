@@ -483,6 +483,7 @@ async def pcpoints_cmd(ctx: commands.Context, *, member: discord.Member | None =
 
 
 @bot.command(name="winrate", aliases=["record"])
+@commands.has_any_role(MEMBER_ROLE, MOD_ROLE)
 async def winrate_cmd(ctx: commands.Context, member: discord.Member | None = None) -> None:
     member = member or ctx.author
     wins, losses = await bot.db.record(member.id)
@@ -503,7 +504,7 @@ async def help_cmd(ctx: commands.Context) -> None:
         f"`!leaderboard` — Top 10 PC Point holders ({MEMBER_ROLE} only)\n"
         f"`!pcpoints` — your PC Points total ({MEMBER_ROLE} only)\n"
         f"`!pcpoints [member]` — someone else's PC Points ({MOD_ROLE} only)\n"
-        "`!winrate [@member]` — pick'em win % and record\n"
+        f"`!winrate [@member]` — pick'em win % and record ({MEMBER_ROLE} only)\n"
         f"`/givepcpoints @member amount` — give/take PC Points ({MOD_ROLE} only)\n\n"
         f"Polls go up in <#{CHANNEL_ID}> {POST_HOURS_BEFORE:g} hours before every NBA game. "
         f"React {ONE} or {TWO} (one pick only). Correct pick = +{POINTS_PER_WIN} PC Points.\n"
