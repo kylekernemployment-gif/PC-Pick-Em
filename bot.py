@@ -57,7 +57,11 @@ TOKEN = _required("DISCORD_TOKEN")
 GUILD_ID = _required_id("GUILD_ID")
 CHANNEL_ID = _required_id("PICKEM_CHANNEL_ID")
 MOD_ROLE = os.getenv("MOD_ROLE_NAME", "Lead Moderator")
-MEMBER_ROLE = os.getenv("MEMBER_ROLE_NAME", "YouTube Member")
+# Paid-member roles: any of these unlocks pick'em, 82-0, the leaderboard and the ! commands.
+MEMBER_ROLES = tuple(r.strip() for r in os.getenv(
+    "MEMBER_ROLE_NAMES", os.getenv("MEMBER_ROLE_NAME", "YouTube Member") + ",Players Choice").split(",") if r.strip())
+ALLOWED_ROLES = (*MEMBER_ROLES, MOD_ROLE)
+MEMBERS_LABEL = " & ".join(MEMBER_ROLES) + " members"  # e.g. "YouTube Member & Players Choice members"
 LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "").strip() or 0) or None
 DAILY_LEADERBOARD_HOUR = int(os.getenv("DAILY_LEADERBOARD_HOUR", "10"))  # US Eastern, 24h clock
 DAILY_LEADERBOARD_SIZE = 25
@@ -130,7 +134,7 @@ class PickEmBot(commands.Bot):
         else:
             log.info("Captcha verification off (set VERIFY_CHANNEL_ID to turn on)")
         if _env_bool("EIGHTYTWO", "true"):
-            await self.add_cog(eightytwo.EightyTwoZero(self, MEMBER_ROLE, MOD_ROLE), guild=guild)
+            await self.add_cog(eightytwo.EightyTwoZero(self, ALLOWED_ROLES, MEMBERS_LABEL), guild=guild)
         if antiscam.is_enabled():
             await self.add_cog(antiscam.AntiScam(self, GUILD_ID, MOD_ROLE), guild=guild)
 
@@ -173,7 +177,7 @@ def poll_embed(game: dict, picks: int | None = None) -> discord.Embed:
         color = discord.Color.blue()
         lines.insert(0, "**Who wins?** Tap a team below. You can switch until tip-off.\n")
         lines += ["🔒 Poll closes at tip-off.", f"💰 Correct pick = **+{POINTS_PER_WIN} PC Points**",
-                  f"🎟️ {MEMBER_ROLE}s only"]
+                  f"🎟️ {MEMBERS_LABEL} only"]
     elif status == "locked":
         color = discord.Color.orange()
         lines += ["", f"🔒 **Poll closed** — game in progress. {picks or 0} pick(s) locked in."]
@@ -243,7 +247,7 @@ async def handle_pick(interaction: discord.Interaction, choice: int) -> None:
         await reply("This poll isn't active anymore.")
         return
     if not can_play(interaction.user):
-        await reply(f"🎟️ PC Pick Em' is for **{MEMBER_ROLE}s** only.")
+        await reply(f"🎟️ PC Pick Em' is for **{MEMBERS_LABEL}** only.")
         return
     gid = game["game_id"]
     async with bot.game_locks[gid]:
@@ -513,7 +517,7 @@ def is_mod(member: discord.abc.User) -> bool:
 
 
 def can_play(member: discord.abc.User | None) -> bool:
-    return any(r.name in (MEMBER_ROLE, MOD_ROLE) for r in getattr(member, "roles", []))
+    return any(r.name in ALLOWED_ROLES for r in getattr(member, "roles", []))
 
 
 async def can_play_id(guild_id: int, user_id: int) -> bool:
@@ -530,7 +534,7 @@ async def can_play_id(guild_id: int, user_id: int) -> bool:
 
 
 @bot.command(name="leaderboard", aliases=["lb"])
-@commands.has_any_role(MEMBER_ROLE, MOD_ROLE)
+@commands.has_any_role(*ALLOWED_ROLES)
 async def leaderboard_cmd(ctx: commands.Context) -> None:
     embed = await leaderboard_embed(10, "🏆 PC Points Leaderboard — Top 10")
     if embed is None:
@@ -540,7 +544,7 @@ async def leaderboard_cmd(ctx: commands.Context) -> None:
 
 
 @bot.command(name="pcpoints", aliases=["points"])
-@commands.has_any_role(MEMBER_ROLE, MOD_ROLE)
+@commands.has_any_role(*ALLOWED_ROLES)
 async def pcpoints_cmd(ctx: commands.Context, *, member: discord.Member | None = None) -> None:
     if member and member != ctx.author and not is_mod(ctx.author):
         await ctx.send(f"⛔ Only **{MOD_ROLE}** can check someone else's PC Points.")
@@ -555,7 +559,7 @@ async def pcpoints_cmd(ctx: commands.Context, *, member: discord.Member | None =
 
 
 @bot.command(name="winrate", aliases=["record"])
-@commands.has_any_role(MEMBER_ROLE, MOD_ROLE)
+@commands.has_any_role(*ALLOWED_ROLES)
 async def winrate_cmd(ctx: commands.Context, member: discord.Member | None = None) -> None:
     member = member or ctx.author
     wins, losses = await bot.db.record(member.id)
@@ -573,10 +577,10 @@ async def winrate_cmd(ctx: commands.Context, member: discord.Member | None = Non
 async def help_cmd(ctx: commands.Context) -> None:
     await ctx.send(
         "**PC Pick Em' commands**\n"
-        f"`!leaderboard` — Top 10 PC Point holders ({MEMBER_ROLE} only)\n"
-        f"`!pcpoints` — your PC Points total ({MEMBER_ROLE} only)\n"
+        f"`!leaderboard` — Top 10 PC Point holders ({MEMBERS_LABEL})\n"
+        f"`!pcpoints` — your PC Points total ({MEMBERS_LABEL})\n"
         f"`!pcpoints [member]` — someone else's PC Points ({MOD_ROLE} only)\n"
-        f"`!winrate [@member]` — pick'em win % and record ({MEMBER_ROLE} only)\n"
+        f"`!winrate [@member]` — pick'em win % and record ({MEMBERS_LABEL})\n"
         f"`/givepcpoints @member amount` — give/take PC Points ({MOD_ROLE} only)\n\n"
         f"Polls go up in <#{CHANNEL_ID}> {POST_HOURS_BEFORE:g} hours before every NBA game. "
         f"Tap a team's button (you can switch until tip-off). Correct pick = +{POINTS_PER_WIN} PC Points.\n"
@@ -642,7 +646,7 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError) 
     if isinstance(error, commands.MissingRole):
         await ctx.send(f"⛔ Only members with the **{MOD_ROLE}** role can use this.")
     elif isinstance(error, commands.MissingAnyRole):
-        await ctx.send(f"⛔ You need the **{MEMBER_ROLE}** role to use this.")
+        await ctx.send(f"⛔ This is for **{MEMBERS_LABEL}** only.")
     elif isinstance(error, commands.NoPrivateMessage):
         await ctx.send("Use PC Pick Em' commands in the server, not in DMs.")
     elif isinstance(error, (commands.MemberNotFound, commands.BadArgument, commands.MissingRequiredArgument)):

@@ -305,7 +305,7 @@ def game_embed(game: Game, member: discord.abc.User, status: str | None = None,
                note: str | None = None) -> discord.Embed:
     reveal = game.mode == "classic"
     e = discord.Embed(title="🏀 82-0 Challenge", color=discord.Color.orange())
-    e.set_author(name=f"{member.display_name} · {MODE_LABEL[game.mode]}", icon_url=member.display_avatar.url)
+    e.set_author(name=f"{member.display_name}'s game · {MODE_LABEL[game.mode]}", icon_url=member.display_avatar.url)
     e.add_field(name=f"Starting five ({len(game.lineup)}/5)", value="\n".join(lineup_lines(game, reveal)), inline=False)
     if status:
         e.add_field(name="​", value=status, inline=False)
@@ -327,7 +327,7 @@ def game_embed(game: Game, member: discord.abc.User, status: str | None = None,
         skips.append("team skip")
     if game.decade_skip:
         skips.append("decade skip")
-    e.set_footer(text=f"Skips left: {', '.join(skips) if skips else 'none'}"
+    e.set_footer(text=f"🔒 Only {member.display_name} can play this game · Skips left: {', '.join(skips) if skips else 'none'}"
                       + (" · * = estimated (not tracked before 1973-74)" if reveal else ""))
     return e
 
@@ -337,7 +337,7 @@ def result_embed(game: Game, member: discord.abc.User, result: dict, reward_note
     e = discord.Embed(
         title=f"🏆 82-0! A perfect season!" if perfect else f"🏀 Final record: {result['wins']}-{result['losses']}",
         color=discord.Color.gold() if perfect else discord.Color.blue())
-    e.set_author(name=f"{member.display_name} · {MODE_LABEL[game.mode]}", icon_url=member.display_avatar.url)
+    e.set_author(name=f"{member.display_name}'s game · {MODE_LABEL[game.mode]}", icon_url=member.display_avatar.url)
     e.add_field(name="Starting five", value="\n".join(lineup_lines(game, reveal=True)), inline=False)
     t = result["totals"]
     e.add_field(name="Team per game (era-adjusted)",
@@ -366,7 +366,7 @@ class GameView(discord.ui.View):
             moves = g.move_options()
             select = discord.ui.Select(placeholder="Move which player?", min_values=1, max_values=1,
                                        options=[self._move_option(frm, to) for frm, to in moves][:25])
-            select.callback = self._move_cb(select)
+            select.callback = self._owner_only(self._move_cb(select))
             self.add_item(select)
             self.add_item(self._button("Back", "↩️", discord.ButtonStyle.secondary, self.on_cancel_move))
             return
@@ -382,7 +382,7 @@ class GameView(discord.ui.View):
             return
         select = discord.ui.Select(placeholder="Draft a player…", min_values=1, max_values=1,
                                    options=[self._option(i, p) for i, p in enumerate(g.options)])
-        select.callback = self._select_cb(select)
+        select.callback = self._owner_only(self._select_cb(select))
         self.add_item(select)
         if g.team_skip:
             self.add_item(self._button("Skip team", "⏭️", discord.ButtonStyle.secondary, self.on_skip_team))
@@ -409,15 +409,26 @@ class GameView(discord.ui.View):
             label, desc = f"{p['name']} ({p['pos']})", "Stats and awards hidden — trust your hoop IQ"
         return discord.SelectOption(label=label[:100], value=str(i), description=desc[:100])
 
-    @staticmethod
-    def _button(label, emoji, style, cb) -> discord.ui.Button:
+    def _button(self, label, emoji, style, cb) -> discord.ui.Button:
         b = discord.ui.Button(label=label, emoji=emoji, style=style)
-        b.callback = cb
+        b.callback = self._owner_only(cb)
         return b
+
+    def _owner_only(self, cb):
+        """Second lock on every control (on top of interaction_check): only the player who
+        started this game can press its buttons or use its menus."""
+        async def guarded(interaction: discord.Interaction) -> None:
+            if interaction.user.id != self.game.user_id:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        "🔒 This isn't your game. Start your own with `/82-0`.", ephemeral=True)
+                return
+            await cb(interaction)
+        return guarded
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.game.user_id:
-            await interaction.response.send_message("This isn't your game — start your own with `/82-0`.",
+            await interaction.response.send_message("🔒 This isn't your game. Start your own with `/82-0`.",
                                                     ephemeral=True)
             return False
         if self.cog.games.get(self.game.user_id) is not self.game and not self.game.finished:
@@ -529,9 +540,9 @@ class GameView(discord.ui.View):
 
 
 class EightyTwoZero(commands.Cog):
-    def __init__(self, bot: commands.Bot, member_role: str, mod_role: str) -> None:
+    def __init__(self, bot: commands.Bot, allowed_roles: tuple[str, ...], members_label: str) -> None:
         self.bot = bot
-        self.member_role, self.mod_role = member_role, mod_role
+        self.allowed_roles, self.members_label = allowed_roles, members_label
         self.channel_id = env_id("EIGHTYTWO_CHANNEL_ID")
         self.reward_points = int(os.getenv("EIGHTYTWO_POINTS", "50"))
         self.games: dict[int, Game] = {}
@@ -541,7 +552,7 @@ class EightyTwoZero(commands.Cog):
         log.info("82-0 game on (%d franchises)", len(data()["teams"]))
 
     def allowed(self, member: discord.abc.User) -> bool:
-        return any(r.name in (self.member_role, self.mod_role) for r in getattr(member, "roles", []))
+        return any(r.name in self.allowed_roles for r in getattr(member, "roles", []))
 
     @app_commands.command(name="82-0", description="Spin teams and decades, draft a starting five, chase 82-0")
     @app_commands.describe(mode="Classic shows stats while you draft; Hoop IQ hides them")
@@ -549,7 +560,7 @@ class EightyTwoZero(commands.Cog):
                                 app_commands.Choice(name="Hoop IQ (stats hidden)", value="hoopiq")])
     async def eightytwo(self, interaction: discord.Interaction, mode: app_commands.Choice[str]) -> None:
         if not self.allowed(interaction.user):
-            await interaction.response.send_message(f"⛔ 82-0 is for **{self.member_role}s** only.", ephemeral=True)
+            await interaction.response.send_message(f"⛔ 82-0 is for **{self.members_label}** only.", ephemeral=True)
             return
         if self.channel_id and interaction.channel_id != self.channel_id:
             await interaction.response.send_message(f"Play 82-0 in <#{self.channel_id}>.", ephemeral=True)

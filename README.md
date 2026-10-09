@@ -13,7 +13,7 @@ Each extra feature turns on only when its settings are added in Render. See [Oth
 ## NBA pick'em
 
 - **12 hours before every NBA game (preseason included)** it posts a poll in your pick'em channel with two buttons: 1️⃣ away team and 2️⃣ home team.
-- Only members with the **YouTube Member** (or **Lead Moderator**) role can pick. Each member gets **one** pick and can switch it by tapping the other team before tip-off. Every reply is private ("only you can see this"): the confirmation, the members-only notice, and *"You can't pick after the game starts."*
+- Only members with the **YouTube Member** or **Players Choice** role (or **Lead Moderator**) can pick. Each member gets **one** pick and can switch it by tapping the other team before tip-off. Every reply is private ("only you can see this"): the confirmation, the members-only notice, and *"You can't pick after the game starts."*
 - **At tip-off the poll locks** and its buttons disappear.
 - When the game goes **Final**, everyone who picked the winner gets **+100 PC Points** and the bot posts the result.
 - The schedule and live scores come from ESPN's public NBA scoreboard. The NBA's own feed blocks cloud hosts like Render. Postponed games are voided with no points awarded.
@@ -74,7 +74,7 @@ Check the logs. You should see `Logged in as PC Pick Em'...`, `Synced 1 slash co
 | `PICKEM_CHANNEL_ID` | — | required |
 | `DATABASE_URL` | — | Postgres URL. If it's missing, the bot uses a local SQLite file, which is fine for testing on your PC. |
 | `MOD_ROLE_NAME` | `Lead Moderator` | role allowed to use `/givepcpoints` |
-| `MEMBER_ROLE_NAME` | `YouTube Member` | role allowed to use `!leaderboard`, `!pcpoints` and `!winrate` |
+| `MEMBER_ROLE_NAMES` | `YouTube Member,Players Choice` | comma-separated paid-member roles allowed to play pick'em and 82-0 and use `!leaderboard`, `!pcpoints` and `!winrate` |
 | `LEADERBOARD_CHANNEL_ID` | — | channel for the always-updated Top 25 message |
 | `DAILY_LEADERBOARD` | `true` | 10am Top 25 post in the pick'em channel |
 | `DAILY_LEADERBOARD_HOUR` | `10` | hour for the daily leaderboard, US Eastern, 24-hour clock |
@@ -136,7 +136,7 @@ New members get 3 tries and 30 minutes. Accounts younger than 3 days are removed
 This is on by default (`ANTI_SCAM=false` turns it off). It deletes free-Nitro, Steam-gift and fake-Discord-link messages and times the sender out for 1 hour. Members who joined in the last 24 hours can't post links (`NEW_MEMBER_LINK_HOURS`). Mods and anyone with Manage Messages are skipped. The bot needs **Manage Messages** and **Moderate Members**.
 
 ### 82-0
-This is on by default (`EIGHTYTWO=false` turns it off). It's for YouTube Members and Lead Moderators only.
+This is on by default (`EIGHTYTWO=false` turns it off). It's for YouTube Members, Players Choice members and Lead Moderators only. Each game is locked to the person who started it.
 
 `/82-0 mode:` pick **Classic** (stats shown while drafting) or **Hoop IQ** (stats hidden). Each game:
 1. **🎰 Spin** to get a team and decade (1960s through 2020s; decades can repeat).
