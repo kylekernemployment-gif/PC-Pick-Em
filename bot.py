@@ -591,7 +591,12 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         msg = "⛔ You need Administrator permission to use this."
     else:
         log.exception("Slash command error", exc_info=error)
-        msg = "Something went wrong running that command."
+        cause = getattr(error, "original", error)
+        if isinstance(cause, discord.Forbidden):
+            msg = ("⛔ I'm missing a permission for that in this channel or server "
+                   f"(Discord said: {cause.text or cause.status}).")
+        else:
+            msg = f"Something went wrong running that command ({type(cause).__name__}). Check the Render logs."
     if interaction.response.is_done():
         await interaction.followup.send(msg, ephemeral=True)
     else:
