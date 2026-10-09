@@ -98,12 +98,14 @@ class PickEmBot(commands.Bot):
         self.last_board_update = 0.0
         self.last_board_text: str | None = None
         self.bg_tasks: set[asyncio.Task] = set()
+        self.polls_upgraded = False
 
     async def setup_hook(self) -> None:
         await self.db.init()
         log.info("Database ready (%s)", "Postgres" if self.db.pg else f"SQLite: {DB_PATH}")
         self.http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
         self.nba = NBAClient(self.http_session, INCLUDE_PRESEASON)
+        self.add_view(PollView())  # team buttons keep working after restarts
         await self.load_features()
         try:
             synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
@@ -169,7 +171,7 @@ def poll_embed(game: dict, picks: int | None = None) -> discord.Embed:
     ]
     if status in ("scheduled", "open"):
         color = discord.Color.blue()
-        lines.insert(0, "**Who wins?** React with 1️⃣ or 2️⃣ — one pick only!\n")
+        lines.insert(0, "**Who wins?** Tap a team below. You can switch until tip-off.\n")
         lines += ["🔒 Poll closes at tip-off.", f"💰 Correct pick = **+{POINTS_PER_WIN} PC Points**",
                   f"🎟️ {MEMBER_ROLE}s only"]
     elif status == "locked":
@@ -207,14 +209,61 @@ async def refresh_poll(game: dict) -> discord.Message | None:
     if msg:
         picks = await bot.db.pick_count(game["game_id"])
         try:
-            await msg.edit(embed=poll_embed(game, picks))
+            await msg.edit(embed=poll_embed(game, picks),
+                           view=PollView(game) if game["status"] == "open" else None)
         except discord.HTTPException as e:
             log.warning("Couldn't edit poll for %s: %r", game["game_id"], e)
     return msg
 
 
+class PollView(discord.ui.View):
+    """Team buttons on a poll. Registered once at startup so buttons keep
+    working after restarts; the clicked message tells us which game it is."""
+
+    def __init__(self, game: dict | None = None) -> None:
+        super().__init__(timeout=None)
+        for choice, emoji in EMOJIS.items():
+            name = (game["away_name"] if choice == 1 else game["home_name"]) if game else f"Team {choice}"
+            button = discord.ui.Button(label=name[:80], emoji=emoji, style=discord.ButtonStyle.primary,
+                                       custom_id=f"pickem:pick:{choice}")
+            button.callback = self._callback(choice)
+            self.add_item(button)
+
+    @staticmethod
+    def _callback(choice: int):
+        async def cb(interaction: discord.Interaction) -> None:
+            await handle_pick(interaction, choice)
+        return cb
+
+
+async def handle_pick(interaction: discord.Interaction, choice: int) -> None:
+    reply = lambda text: interaction.response.send_message(text, ephemeral=True)
+    game = await bot.db.game_by_message(interaction.message.id)
+    if not game:
+        await reply("This poll isn't active anymore.")
+        return
+    if not can_play(interaction.user):
+        await reply(f"🎟️ PC Pick Em' is for **{MEMBER_ROLE}s** only.")
+        return
+    gid = game["game_id"]
+    async with bot.game_locks[gid]:
+        game = await bot.db.get_game(gid)
+        if game["status"] != "open" or time.time() >= game["tip_utc"]:
+            await reply("⏰ You can't pick after the game starts. This poll closed at tip-off.")
+            return
+        team = game["away_name"] if choice == 1 else game["home_name"]
+        existing = await bot.db.get_pick(gid, interaction.user.id)
+        if existing == choice:
+            await reply(f"You already picked the **{team}**. Tap the other team if you want to switch.")
+            return
+        await bot.db.set_pick(gid, interaction.user.id, choice)
+    switched = " (switched)" if existing else ""
+    await reply(f"✅ You picked the **{team}**{switched}! You can change your pick until tip-off "
+                f"<t:{game['tip_utc']}:R>.")
+
+
 async def reaction_picks(msg: discord.Message) -> dict[int, set[int]]:
-    """user_id -> set of choices they've currently reacted with."""
+    """user_id -> set of choices they reacted with (polls posted before buttons)."""
     chosen: dict[int, set[int]] = defaultdict(set)
     for reaction in msg.reactions:
         choice = CHOICE_BY_EMOJI.get(str(reaction.emoji))
@@ -232,7 +281,7 @@ async def reaction_picks(msg: discord.Message) -> dict[int, set[int]]:
 
 @tasks.loop(seconds=60)
 async def ticker() -> None:
-    for step in (refresh_schedule, post_due_polls, lock_started_games, resolve_finished_games, daily_leaderboard,
+    for step in (upgrade_reaction_polls, refresh_schedule, post_due_polls, lock_started_games, resolve_finished_games, daily_leaderboard,
                  update_live_leaderboard, self_ping):
         try:
             await step()
@@ -263,8 +312,7 @@ async def refresh_schedule() -> None:
                 msg = await poll_message(game)
                 if msg:
                     try:
-                        await msg.edit(embed=poll_embed({**game, "status": "void"}))
-                        await msg.clear_reactions()
+                        await msg.edit(embed=poll_embed({**game, "status": "void"}), view=None)
                     except discord.HTTPException:
                         pass
                 await bot.db.reopen_later(game["game_id"])
@@ -278,10 +326,8 @@ async def post_due_polls() -> None:
         return
     channel = await pickem_channel()
     for game in due:
-        msg = await channel.send(embed=poll_embed(game))
+        msg = await channel.send(embed=poll_embed(game), view=PollView(game))
         await bot.db.mark_posted(game["game_id"], channel.id, msg.id)
-        await msg.add_reaction(ONE)
-        await msg.add_reaction(TWO)
         log.info("Posted poll for %s %s @ %s", game["game_id"], game["away_tri"], game["home_tri"])
 
 
@@ -291,22 +337,8 @@ async def lock_started_games() -> None:
         if game["tip_utc"] > now:
             continue
         async with bot.game_locks[game["game_id"]]:
-            msg = await poll_message(game)
-            picks = None
-            if msg:
-                # Reactions on the message are the source of truth (covers any
-                # reactions made while the bot was offline).
-                picks = {}
-                for user_id, choices in (await reaction_picks(msg)).items():
-                    stored = await bot.db.get_pick(game["game_id"], user_id)
-                    # Picks the bot saw live were role-checked then; check the rest now.
-                    if stored is None and not await can_play_id(GUILD_ID, user_id):
-                        continue
-                    if len(choices) == 1:
-                        picks[user_id] = next(iter(choices))
-                    elif stored in choices:
-                        picks[user_id] = stored
-            await bot.db.lock_game(game["game_id"], picks)
+            # Picks are saved as people click (old reaction polls were imported at startup).
+            await bot.db.lock_game(game["game_id"], None)
             game = await bot.db.get_game(game["game_id"])
             await refresh_poll(game)
         log.info("Locked poll for %s", game["game_id"])
@@ -438,81 +470,29 @@ async def self_ping() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Reactions: one pick per member, closed at tip-off
+# Polls posted before the switch to buttons
 # ---------------------------------------------------------------------------
 
-async def remove_reaction(payload: discord.RawReactionActionEvent) -> None:
-    try:
-        channel = bot.get_channel(payload.channel_id) or await bot.fetch_channel(payload.channel_id)
-        await channel.get_partial_message(payload.message_id).remove_reaction(
-            payload.emoji, discord.Object(id=payload.user_id))
-    except discord.HTTPException as e:
-        log.warning("Couldn't remove reaction (does the bot have Manage Messages?): %r", e)
-
-
-async def warn(payload: discord.RawReactionActionEvent, text: str) -> None:
-    channel = bot.get_channel(payload.channel_id)
-    if channel:
-        await channel.send(f"<@{payload.user_id}> {text}", delete_after=10,
-                           allowed_mentions=discord.AllowedMentions(users=True))
-
-
-@bot.event
-async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
-    if payload.guild_id != GUILD_ID or payload.user_id == bot.user.id:
+async def upgrade_reaction_polls() -> None:
+    """Once per start: give open reaction-style polls buttons, keeping their picks."""
+    if bot.polls_upgraded:
         return
-    if payload.member and payload.member.bot:
-        return
-    game = await bot.db.game_by_message(payload.message_id)
-    if not game:
-        return
-    gid = game["game_id"]
-    choice = CHOICE_BY_EMOJI.get(str(payload.emoji))
-
-    async with bot.game_locks[gid]:
-        game = await bot.db.get_game(gid)
-        if choice is None:  # some other emoji — keep the poll clean
-            await remove_reaction(payload)
-            return
-        if not can_play(payload.member):
-            await remove_reaction(payload)
-            await warn(payload, f"🎟️ PC Pick Em' is for **{MEMBER_ROLE}s** only.")
-            return
-        if game["status"] != "open" or time.time() >= game["tip_utc"]:
-            await remove_reaction(payload)
-            await warn(payload, "⏰ This poll is closed — the game has already started.")
-            return
-
-        existing = await bot.db.get_pick(gid, payload.user_id)
-        if existing is not None and existing != choice:
-            # Double-check they still have the other reaction (it may have been
-            # removed while the bot was offline).
-            msg = await poll_message(game)
-            current = (await reaction_picks(msg)).get(payload.user_id, set()) if msg else {existing}
-            if existing in current:
-                await remove_reaction(payload)
-                await warn(payload, f"❌ You must only react for one team! "
-                                    f"Remove your {EMOJIS[existing]} first if you want to switch.")
-                return
-        await bot.db.set_pick(gid, payload.user_id, choice)
-
-
-@bot.event
-async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent) -> None:
-    if payload.guild_id != GUILD_ID:
-        return
-    choice = CHOICE_BY_EMOJI.get(str(payload.emoji))
-    if choice is None:
-        return
-    game = await bot.db.game_by_message(payload.message_id)
-    if not game:
-        return
-    async with bot.game_locks[game["game_id"]]:
-        game = await bot.db.get_game(game["game_id"])
-        if game["status"] == "open" and time.time() < game["tip_utc"]:
-            # Only clears the pick if it matches the removed emoji, so the bot
-            # removing a rejected second reaction doesn't wipe the real pick.
-            await bot.db.delete_pick(game["game_id"], payload.user_id, choice)
+    bot.polls_upgraded = True
+    for game in await bot.db.games_with_status("open"):
+        msg = await poll_message(game)
+        if not msg or msg.components:
+            continue
+        async with bot.game_locks[game["game_id"]]:
+            for user_id, choices in (await reaction_picks(msg)).items():
+                if len(choices) == 1 and await bot.db.get_pick(game["game_id"], user_id) is None \
+                        and await can_play_id(GUILD_ID, user_id):
+                    await bot.db.set_pick(game["game_id"], user_id, next(iter(choices)))
+            try:
+                await msg.edit(embed=poll_embed(game), view=PollView(game))
+                await msg.clear_reactions()
+            except discord.HTTPException as e:
+                log.warning("Couldn't upgrade poll %s to buttons: %r", game["game_id"], e)
+        log.info("Upgraded poll %s to buttons", game["game_id"])
 
 
 # ---------------------------------------------------------------------------
@@ -599,7 +579,7 @@ async def help_cmd(ctx: commands.Context) -> None:
         f"`!winrate [@member]` — pick'em win % and record ({MEMBER_ROLE} only)\n"
         f"`/givepcpoints @member amount` — give/take PC Points ({MOD_ROLE} only)\n\n"
         f"Polls go up in <#{CHANNEL_ID}> {POST_HOURS_BEFORE:g} hours before every NBA game. "
-        f"React {ONE} or {TWO} (one pick only). Correct pick = +{POINTS_PER_WIN} PC Points.\n"
+        f"Tap a team's button (you can switch until tip-off). Correct pick = +{POINTS_PER_WIN} PC Points.\n"
         + (f"The Top {DAILY_LEADERBOARD_SIZE} leaderboard is posted every day at {DAILY_LEADERBOARD_HOUR % 12 or 12}"
            f"{'am' if DAILY_LEADERBOARD_HOUR < 12 else 'pm'} ET." if DAILY_LEADERBOARD else "")
         + (f"\nLive leaderboard: <#{LEADERBOARD_CHANNEL_ID}>" if LEADERBOARD_CHANNEL_ID else "")

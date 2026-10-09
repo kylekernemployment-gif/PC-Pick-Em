@@ -33,7 +33,7 @@ TARGETS = {"pts": 125, "reb": 46, "ast": 30, "stl": 8.5, "blk": 7.5}
 WEIGHTS = {"pts": 0.32, "reb": 0.20, "ast": 0.20, "stl": 0.12, "blk": 0.16}
 # Rating -> wins (piecewise linear). Calibrated by simulation: random picks average ~25 wins,
 # sensible picks ~62, and only great, balanced lineups reach 82-0.
-WIN_CURVE = [(0.15, 0), (0.34, 25), (0.81, 62), (0.96, 82)]
+WIN_CURVE = [(0.08, 0), (0.233, 25), (0.734, 62), (0.876, 82)]
 MAX_OPTIONS = 25  # Discord select menu limit
 EASTERN = ZoneInfo("America/New_York")
 

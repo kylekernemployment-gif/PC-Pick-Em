@@ -6,7 +6,8 @@ Usage:
 
 For every franchise (today's 30 teams, including their old names) and decade
 (1960s-2020s) it keeps up to 40 players who played there, each with their
-best season for that team in that decade, both raw and era-adjusted.
+per-game averages for that team in that decade (all those seasons, weighted
+by games played), both raw and era-adjusted.
 """
 
 from __future__ import annotations
@@ -112,7 +113,7 @@ def main(src: Path, out: Path) -> None:
     for r in rows:
         s = int(r["season"])
         g = f(r["g"]) or 0
-        if g < MIN_GAMES or s not in lg_avg or not career_pos[r["player_id"]]:
+        if g <= 0 or s not in lg_avg or not career_pos[r["player_id"]]:
             continue
         raw = {k: f(r[f"{k}_per_game"]) for k in STATS}
         est = False
@@ -128,10 +129,9 @@ def main(src: Path, out: Path) -> None:
         for k in STATS:
             league = lg_avg[s].get(k) or base[k]  # no league stl/blk before 1974 -> no adjustment
             adj[k] = raw[k] * base[k] / league
-        value = adj["pts"] + 1.2 * adj["trb"] + 1.5 * adj["ast"] + 3 * adj["stl"] + 3 * adj["blk"]
         key = (FRANCHISE[r["team"]], decade_of(s))
         groups[key][r["player_id"]].append({
-            "name": r["player"], "season": s, "g": g, "raw": raw, "adj": adj, "value": value, "est": est,
+            "name": r["player"], "season": s, "g": g, "raw": raw, "adj": adj, "est": est,
             "team_name": names.get((s, r["team"]), r["team"]),
         })
 
@@ -140,16 +140,21 @@ def main(src: Path, out: Path) -> None:
         entries = []
         team_names: dict[str, int] = defaultdict(int)
         for pid, seasons in players.items():
-            peak = max(seasons, key=lambda x: x["value"])
             games = sum(x["g"] for x in seasons)
             for x in seasons:
                 team_names[x["team_name"]] += int(x["g"])
+            if games < MIN_GAMES:
+                continue
+            # Per-game averages across every season with this team in this decade, weighted by games.
+            avg = lambda key, k: sum(x[key][k] * x["g"] for x in seasons) / games
+            first, last = min(x["season"] for x in seasons), max(x["season"] for x in seasons)
+            span = season_label(first) if first == last else f"{first - 1}-{str(last)[-2:]}"
             pos = "/".join(p for p in order if p in career_pos[pid])
             entries.append((games, [
-                peak["name"], pos, season_label(peak["season"]),
-                *[round(peak["raw"][k], 1) for k in STATS],
-                *[round(peak["adj"][k], 2) for k in STATS],
-                int(peak["est"]),
+                seasons[0]["name"], pos, span,
+                *[round(avg("raw", k), 1) for k in STATS],
+                *[round(avg("adj", k), 2) for k in STATS],
+                int(any(x["est"] for x in seasons)), int(games),
             ]))
         entries.sort(key=lambda e: -e[0])
         if len(entries) < 5:
@@ -166,7 +171,7 @@ def main(src: Path, out: Path) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "fields": ["name", "pos", "season", "pts", "reb", "ast", "stl", "blk",
-                   "adj_pts", "adj_reb", "adj_ast", "adj_stl", "adj_blk", "est"],
+                   "adj_pts", "adj_reb", "adj_ast", "adj_stl", "adj_blk", "est", "games"],
         "decades": DECADES,
         "teams": teams,
         "source": "Basketball-Reference via github.com/sumitrodatta/bball-reference-datasets",

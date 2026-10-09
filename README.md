@@ -12,9 +12,9 @@ Each extra feature turns on only when its settings are added in Render. See [Oth
 
 ## NBA pick'em
 
-- **12 hours before every NBA game (preseason included)** it posts a poll in your pick'em channel and pre-reacts with 1️⃣ (away team) and 2️⃣ (home team).
-- Only members with the **YouTube Member** (or **Lead Moderator**) role can pick. Anyone else's reaction is removed. Members can only pick **one** team. Reacting to the second one removes it and shows *"You must only react for one team!"*. To switch, remove your first reaction, then click the other one.
-- **At tip-off the poll locks.** Late reactions are removed.
+- **12 hours before every NBA game (preseason included)** it posts a poll in your pick'em channel with two buttons: 1️⃣ away team and 2️⃣ home team.
+- Only members with the **YouTube Member** (or **Lead Moderator**) role can pick. Each member gets **one** pick and can switch it by tapping the other team before tip-off. Every reply is private ("only you can see this"): the confirmation, the members-only notice, and *"You can't pick after the game starts."*
+- **At tip-off the poll locks** and its buttons disappear.
 - When the game goes **Final**, everyone who picked the winner gets **+100 PC Points** and the bot posts the result.
 - The schedule and live scores come from ESPN's public NBA scoreboard. The NBA's own feed blocks cloud hosts like Render. Postponed games are voided with no points awarded.
 
@@ -42,7 +42,7 @@ If `LEADERBOARD_CHANNEL_ID` is set, the bot also keeps **one live Top 25 message
 2. Click **Reset Token** and copy the token. This is `DISCORD_TOKEN`.
 3. Under **Privileged Gateway Intents**, turn on **Message Content Intent**. The `!` commands need it.
 4. Open **OAuth2 → URL Generator**. Select the scopes `bot` and `applications.commands`. Select these bot permissions:
-   View Channels, Send Messages, Embed Links, Read Message History, Add Reactions, **Manage Messages** (used to remove a second or late reaction).
+   View Channels, Send Messages, Embed Links, Read Message History, Add Reactions, **Manage Messages**.
    Open the generated URL and invite the bot to your server.
 5. In Discord, turn on **User Settings → Advanced → Developer Mode**. Right-click your server and choose **Copy Server ID** (`GUILD_ID`). Right-click the pick'em channel and choose **Copy Channel ID** (`PICKEM_CHANNEL_ID`).
 6. Make sure a role named exactly **Lead Moderator** exists. If yours has a different name, set `MOD_ROLE_NAME`.
@@ -142,6 +142,8 @@ This is on by default (`EIGHTYTWO=false` turns it off). It's for YouTube Members
 1. **🎰 Spin** to get a team and decade (1960s through 2020s; decades can repeat).
 2. Draft a player from that roster.
 3. Put him at an open position he actually played (PG, SG, SF, PF and C, each used once).
+
+A player's stats are his per-game averages **with that team in that decade**: every season there, weighted by games played.
 
 You get **one team skip and one decade skip** per game. Old franchises count as today's team, so the 1990s Thunder are the Seattle SuperSonics.
 

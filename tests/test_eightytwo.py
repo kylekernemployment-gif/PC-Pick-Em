@@ -42,7 +42,7 @@ def test_full_game_and_scoring():
 
 
 def test_win_curve_and_grades():
-    assert E.wins_for(0.1) == 0 and E.wins_for(2) == 82 and E.wins_for(0.34) == 25
+    assert E.wins_for(0.05) == 0 and E.wins_for(2) == 82 and E.wins_for(0.233) == 25
     assert E.grade_for(82).startswith("S") and E.grade_for(70) == "A" and E.grade_for(10) == "F"
 
 
