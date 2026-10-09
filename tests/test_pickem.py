@@ -79,3 +79,14 @@ def test_full_game_flow(tmp_path):
         assert await db.add_points(222, 250) == 250
         assert await db.leaderboard() == [(222, 250), (111, 100), (333, 100)]
     asyncio.run(go())
+
+
+def test_settings(tmp_path):
+    async def go():
+        db = Database(path=str(tmp_path / "s.db"))
+        await db.init()
+        assert await db.get_setting("daily_leaderboard_date") is None
+        await db.set_setting("daily_leaderboard_date", "2026-10-09")
+        await db.set_setting("daily_leaderboard_date", "2026-10-10")
+        assert await db.get_setting("daily_leaderboard_date") == "2026-10-10"
+    asyncio.run(go())

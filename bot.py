@@ -7,6 +7,7 @@ import logging
 import os
 import time
 from collections import defaultdict
+from datetime import datetime
 
 import aiohttp
 import discord
@@ -15,7 +16,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from db import Database
-from nba import NBAClient
+from nba import EASTERN, NBAClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("pcpickem")
@@ -54,6 +55,10 @@ TOKEN = _required("DISCORD_TOKEN")
 GUILD_ID = _required_id("GUILD_ID")
 CHANNEL_ID = _required_id("PICKEM_CHANNEL_ID")
 MOD_ROLE = os.getenv("MOD_ROLE_NAME", "Lead Moderator")
+MEMBER_ROLE = os.getenv("MEMBER_ROLE_NAME", "YouTube Member")
+LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "").strip() or 0) or None
+DAILY_LEADERBOARD_HOUR = int(os.getenv("DAILY_LEADERBOARD_HOUR", "10"))  # US Eastern, 24h clock
+DAILY_LEADERBOARD_SIZE = 25
 POINTS_PER_WIN = int(os.getenv("POINTS_PER_WIN", "100"))
 POST_HOURS_BEFORE = float(os.getenv("POST_HOURS_BEFORE", "12"))
 INCLUDE_PRESEASON = _env_bool("INCLUDE_PRESEASON", "true")
@@ -195,7 +200,8 @@ async def reaction_picks(msg: discord.Message) -> dict[int, set[int]]:
 
 @tasks.loop(seconds=60)
 async def ticker() -> None:
-    for step in (refresh_schedule, post_due_polls, lock_started_games, resolve_finished_games, self_ping):
+    for step in (refresh_schedule, post_due_polls, lock_started_games, resolve_finished_games, daily_leaderboard,
+                 self_ping):
         try:
             await step()
         except Exception:
@@ -327,6 +333,26 @@ async def announce_result(game: dict, msg: discord.Message | None, winners: list
     await channel.send(text, allowed_mentions=NO_PINGS, **kwargs)
 
 
+async def daily_leaderboard() -> None:
+    """Post the Top 25 once a day at DAILY_LEADERBOARD_HOUR (US Eastern)."""
+    now = datetime.now(EASTERN)
+    today = now.date().isoformat()
+    # Two-hour window so a restart around 10am doesn't skip the day, but a
+    # restart in the afternoon doesn't post a late one.
+    if not DAILY_LEADERBOARD_HOUR <= now.hour < DAILY_LEADERBOARD_HOUR + 2:
+        return
+    if await bot.db.get_setting("daily_leaderboard_date") == today:
+        return
+    await bot.db.set_setting("daily_leaderboard_date", today)
+    embed = await leaderboard_embed(DAILY_LEADERBOARD_SIZE, f"☀️ Daily PC Points Leaderboard — Top {DAILY_LEADERBOARD_SIZE}")
+    if embed is None:
+        return
+    channel_id = LEADERBOARD_CHANNEL_ID or CHANNEL_ID
+    channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+    await channel.send(embed=embed, allowed_mentions=NO_PINGS)
+    log.info("Posted daily leaderboard")
+
+
 async def self_ping() -> None:
     """Keep a free Render web service awake by hitting our own public URL."""
     url = os.getenv("RENDER_EXTERNAL_URL")
@@ -418,21 +444,35 @@ async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent) -> Non
 # Commands
 # ---------------------------------------------------------------------------
 
-@bot.command(name="leaderboard", aliases=["lb"])
-async def leaderboard_cmd(ctx: commands.Context) -> None:
-    rows = await bot.db.leaderboard(10)
+async def leaderboard_embed(limit: int, title: str) -> discord.Embed | None:
+    rows = await bot.db.leaderboard(limit)
     if not rows:
-        await ctx.send("Nobody has any PC Points yet. Get picking! 🏀")
-        return
+        return None
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     lines = [f"{medals.get(i, f'`#{i}`')} <@{uid}> — **{pts:,}** PC Points" for i, (uid, pts) in enumerate(rows, 1)]
-    embed = discord.Embed(title="🏆 PC Points Leaderboard — Top 10", description="\n".join(lines),
-                          color=discord.Color.gold())
+    return discord.Embed(title=title, description="\n".join(lines), color=discord.Color.gold())
+
+
+def is_mod(member: discord.abc.User) -> bool:
+    return any(r.name == MOD_ROLE for r in getattr(member, "roles", []))
+
+
+@bot.command(name="leaderboard", aliases=["lb"])
+@commands.has_any_role(MEMBER_ROLE, MOD_ROLE)
+async def leaderboard_cmd(ctx: commands.Context) -> None:
+    embed = await leaderboard_embed(10, "🏆 PC Points Leaderboard — Top 10")
+    if embed is None:
+        await ctx.send("Nobody has any PC Points yet. Get picking! 🏀")
+        return
     await ctx.send(embed=embed, allowed_mentions=NO_PINGS)
 
 
 @bot.command(name="pcpoints", aliases=["points"])
-async def pcpoints_cmd(ctx: commands.Context, member: discord.Member | None = None) -> None:
+@commands.has_any_role(MEMBER_ROLE, MOD_ROLE)
+async def pcpoints_cmd(ctx: commands.Context, *, member: discord.Member | None = None) -> None:
+    if member and member != ctx.author and not is_mod(ctx.author):
+        await ctx.send(f"⛔ Only **{MOD_ROLE}** can check someone else's PC Points.")
+        return
     member = member or ctx.author
     points, rank = await bot.db.get_points(member.id)
     who = "You have" if member == ctx.author else f"{member.mention} has"
@@ -460,12 +500,15 @@ async def winrate_cmd(ctx: commands.Context, member: discord.Member | None = Non
 async def help_cmd(ctx: commands.Context) -> None:
     await ctx.send(
         "**PC Pick Em' commands**\n"
-        "`!leaderboard` — Top 10 PC Point holders\n"
-        "`!pcpoints [@member]` — PC Points total\n"
+        f"`!leaderboard` — Top 10 PC Point holders ({MEMBER_ROLE} only)\n"
+        f"`!pcpoints` — your PC Points total ({MEMBER_ROLE} only)\n"
+        f"`!pcpoints [member]` — someone else's PC Points ({MOD_ROLE} only)\n"
         "`!winrate [@member]` — pick'em win % and record\n"
         f"`/givepcpoints @member amount` — give/take PC Points ({MOD_ROLE} only)\n\n"
         f"Polls go up in <#{CHANNEL_ID}> {POST_HOURS_BEFORE:g} hours before every NBA game. "
-        f"React {ONE} or {TWO} (one pick only). Correct pick = +{POINTS_PER_WIN} PC Points."
+        f"React {ONE} or {TWO} (one pick only). Correct pick = +{POINTS_PER_WIN} PC Points.\n"
+        f"The Top {DAILY_LEADERBOARD_SIZE} leaderboard is posted every day at {DAILY_LEADERBOARD_HOUR % 12 or 12}"
+        f"{'am' if DAILY_LEADERBOARD_HOUR < 12 else 'pm'} ET."
     )
 
 
@@ -514,6 +557,10 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError) 
         return
     if isinstance(error, commands.MissingRole):
         await ctx.send(f"⛔ Only members with the **{MOD_ROLE}** role can use this.")
+    elif isinstance(error, commands.MissingAnyRole):
+        await ctx.send(f"⛔ You need the **{MEMBER_ROLE}** role to use this.")
+    elif isinstance(error, commands.NoPrivateMessage):
+        await ctx.send("Use PC Pick Em' commands in the server, not in DMs.")
     elif isinstance(error, (commands.MemberNotFound, commands.BadArgument, commands.MissingRequiredArgument)):
         await ctx.send(f"⚠️ {error}")
     else:

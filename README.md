@@ -12,11 +12,14 @@ A Discord bot that runs a daily NBA pick'em for one server.
 
 | Command | What it does |
 |---|---|
-| `!leaderboard` | Top 10 PC Point holders |
-| `!pcpoints [@member]` | Your (or someone's) PC Points total and rank |
+| `!leaderboard` | Top 10 PC Point holders. Needs the **YouTube Member** or **Lead Moderator** role. |
+| `!pcpoints` | Your PC Points total and rank. Needs the **YouTube Member** or **Lead Moderator** role. |
+| `!pcpoints <member>` | **Lead Moderator only.** Someone else's PC Points. Accepts a mention, username or ID. |
 | `!winrate [@member]` | Pick'em record, for example `55% win rate, 55-45 record` |
 | `/givepcpoints @member amount` | **Lead Moderator only.** Gives PC Points. A negative amount takes them away. `!givepcpoints` works too. |
 | `!pickemhelp` | Lists the commands |
+
+Every day at **10am Eastern** the bot posts the **Top 25** leaderboard in the pick'em channel, or in `LEADERBOARD_CHANNEL_ID` if you set one.
 
 ---
 
@@ -59,6 +62,9 @@ Check the logs. You should see `Logged in as PC Pick Em'...`, `Synced 1 slash co
 | `PICKEM_CHANNEL_ID` | — | required |
 | `DATABASE_URL` | — | Postgres URL. If it's missing, the bot uses a local SQLite file, which is fine for testing on your PC. |
 | `MOD_ROLE_NAME` | `Lead Moderator` | role allowed to use `/givepcpoints` |
+| `MEMBER_ROLE_NAME` | `YouTube Member` | role allowed to use `!leaderboard` and `!pcpoints` |
+| `LEADERBOARD_CHANNEL_ID` | pick'em channel | where the daily Top 25 is posted |
+| `DAILY_LEADERBOARD_HOUR` | `10` | hour for the daily leaderboard, US Eastern, 24-hour clock |
 | `POINTS_PER_WIN` | `100` | |
 | `POST_HOURS_BEFORE` | `12` | |
 | `INCLUDE_PRESEASON` | `true` | polls for preseason games too (good for testing). Set to `false` to only do regular season + playoffs |

@@ -53,6 +53,10 @@ SCHEMA = [
         user_id  BIGINT PRIMARY KEY,
         points   BIGINT NOT NULL DEFAULT 0
     )""",
+    """CREATE TABLE IF NOT EXISTS settings (
+        key    TEXT PRIMARY KEY,
+        value  TEXT
+    )""",
 ]
 
 
@@ -256,3 +260,13 @@ class Database:
             "       COALESCE(SUM(CASE WHEN correct = 0 THEN 1 ELSE 0 END), 0) "
             "FROM picks WHERE user_id = ? AND correct IS NOT NULL", (user_id,)).fetchone())
         return int(row[0]), int(row[1])
+
+    # -- misc state -------------------------------------------------------
+    async def get_setting(self, key: str) -> str | None:
+        row = await self.run(lambda ex: ex("SELECT value FROM settings WHERE key = ?", (key,)).fetchone())
+        return row[0] if row else None
+
+    async def set_setting(self, key: str, value: str) -> None:
+        await self.run(lambda ex: ex(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value)))
