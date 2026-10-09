@@ -16,6 +16,7 @@ from .common import env_id, log
 
 RSS_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 VIDEOS_API = "https://www.googleapis.com/youtube/v3/videos"
+PLAYLIST_ITEMS_API = "https://www.googleapis.com/youtube/v3/playlistItems"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 NS = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
@@ -26,6 +27,16 @@ def parse_latest_video_id(xml_text: str) -> str | None:
     entry = ET.fromstring(xml_text).find("atom:entry", NS)
     vid = entry.find("yt:videoId", NS) if entry is not None else None
     return vid.text if vid is not None else None
+
+
+def uploads_playlist_id(channel_id: str) -> str:
+    """A channel's uploads playlist is its ID with UC swapped for UU."""
+    return "UU" + channel_id[2:] if channel_id.startswith("UC") else channel_id
+
+
+def parse_playlist_latest(data: dict) -> str | None:
+    items = (data or {}).get("items") or []
+    return items[0].get("contentDetails", {}).get("videoId") if items else None
 
 
 def parse_video_status(data: dict, video_id: str) -> dict:
@@ -56,7 +67,7 @@ class YouTubeLive(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.api_key = os.environ["YOUTUBE_API_KEY"].strip()
-        self.yt_channel = os.environ["YOUTUBE_CHANNEL_ID"].strip()
+        self.yt_channel = os.environ["YOUTUBE_CHANNEL_ID"].strip().strip("'\"").strip()
         self.notify_channel_id = env_id("YOUTUBE_NOTIFY_CHANNEL_ID")
 
     async def cog_load(self) -> None:
@@ -66,14 +77,24 @@ class YouTubeLive(commands.Cog):
         self.check.cancel()
 
     async def latest_video_id(self) -> str | None:
+        """Newest video from the RSS feed, or from the YouTube API if the feed is down."""
         try:
             async with self.bot.http_session.get(RSS_URL.format(channel_id=self.yt_channel), headers=HEADERS) as r:
-                if r.status != 200:
-                    log.warning("[YouTube] RSS -> HTTP %s", r.status)
-                    return None
-                return parse_latest_video_id(await r.text())
+                if r.status == 200:
+                    return parse_latest_video_id(await r.text())
+                log.info("[YouTube] RSS -> HTTP %s, using the YouTube API instead", r.status)
         except Exception as e:
-            log.warning("[YouTube] RSS error: %r", e)
+            log.info("[YouTube] RSS error (%r), using the YouTube API instead", e)
+        params = {"part": "contentDetails", "playlistId": uploads_playlist_id(self.yt_channel),
+                  "maxResults": 1, "key": self.api_key}
+        try:
+            async with self.bot.http_session.get(PLAYLIST_ITEMS_API, params=params) as r:
+                if r.status != 200:
+                    log.warning("[YouTube] API playlistItems -> HTTP %s: %s", r.status, (await r.text())[:300])
+                    return None
+                return parse_playlist_latest(await r.json())
+        except Exception as e:
+            log.warning("[YouTube] API playlistItems error: %r", e)
             return None
 
     async def video_status(self, video_id: str) -> dict | None:
