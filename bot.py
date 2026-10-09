@@ -139,7 +139,8 @@ def poll_embed(game: dict, picks: int | None = None) -> discord.Embed:
     if status in ("scheduled", "open"):
         color = discord.Color.blue()
         lines.insert(0, "**Who wins?** React with 1️⃣ or 2️⃣ — one pick only!\n")
-        lines += ["🔒 Poll closes at tip-off.", f"💰 Correct pick = **+{POINTS_PER_WIN} PC Points**"]
+        lines += ["🔒 Poll closes at tip-off.", f"💰 Correct pick = **+{POINTS_PER_WIN} PC Points**",
+                  f"🎟️ {MEMBER_ROLE}s only"]
     elif status == "locked":
         color = discord.Color.orange()
         lines += ["", f"🔒 **Poll closed** — game in progress. {picks or 0} pick(s) locked in."]
@@ -266,12 +267,14 @@ async def lock_started_games() -> None:
                 # reactions made while the bot was offline).
                 picks = {}
                 for user_id, choices in (await reaction_picks(msg)).items():
+                    stored = await bot.db.get_pick(game["game_id"], user_id)
+                    # Picks the bot saw live were role-checked then; check the rest now.
+                    if stored is None and not await can_play_id(GUILD_ID, user_id):
+                        continue
                     if len(choices) == 1:
                         picks[user_id] = next(iter(choices))
-                    else:
-                        stored = await bot.db.get_pick(game["game_id"], user_id)
-                        if stored in choices:
-                            picks[user_id] = stored
+                    elif stored in choices:
+                        picks[user_id] = stored
             await bot.db.lock_game(game["game_id"], picks)
             game = await bot.db.get_game(game["game_id"])
             await refresh_poll(game)
@@ -403,6 +406,10 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
         if choice is None:  # some other emoji — keep the poll clean
             await remove_reaction(payload)
             return
+        if not can_play(payload.member):
+            await remove_reaction(payload)
+            await warn(payload, f"🎟️ PC Pick Em' is for **{MEMBER_ROLE}s** only.")
+            return
         if game["status"] != "open" or time.time() >= game["tip_utc"]:
             await remove_reaction(payload)
             await warn(payload, "⏰ This poll is closed — the game has already started.")
@@ -455,6 +462,23 @@ async def leaderboard_embed(limit: int, title: str) -> discord.Embed | None:
 
 def is_mod(member: discord.abc.User) -> bool:
     return any(r.name == MOD_ROLE for r in getattr(member, "roles", []))
+
+
+def can_play(member: discord.abc.User | None) -> bool:
+    return any(r.name in (MEMBER_ROLE, MOD_ROLE) for r in getattr(member, "roles", []))
+
+
+async def can_play_id(guild_id: int, user_id: int) -> bool:
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        return False
+    member = guild.get_member(user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.HTTPException:
+            return False
+    return can_play(member)
 
 
 @bot.command(name="leaderboard", aliases=["lb"])

@@ -3,7 +3,7 @@
 A Discord bot that runs a daily NBA pick'em for one server.
 
 - **12 hours before every NBA game (preseason included)** it posts a poll in your pick'em channel and pre-reacts with 1️⃣ (away team) and 2️⃣ (home team).
-- Members can only pick **one** team. Reacting to the second one removes it and shows *"You must only react for one team!"*. To switch, remove your first reaction, then click the other one.
+- Only members with the **YouTube Member** (or **Lead Moderator**) role can pick. Anyone else's reaction is removed. Members can only pick **one** team. Reacting to the second one removes it and shows *"You must only react for one team!"*. To switch, remove your first reaction, then click the other one.
 - **At tip-off the poll locks.** Late reactions are removed.
 - When the game goes **Final**, everyone who picked the winner gets **+100 PC Points** and the bot posts the result.
 - The schedule and live scores come from ESPN's public NBA scoreboard. The NBA's own feed blocks cloud hosts like Render. Postponed games are voided with no points awarded.
