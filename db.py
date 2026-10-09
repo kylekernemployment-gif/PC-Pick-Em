@@ -53,6 +53,10 @@ SCHEMA = [
         user_id  BIGINT PRIMARY KEY,
         points   BIGINT NOT NULL DEFAULT 0
     )""",
+    """CREATE TABLE IF NOT EXISTS pending_verifications (
+        user_id    BIGINT PRIMARY KEY,
+        joined_at  BIGINT NOT NULL
+    )""",
     """CREATE TABLE IF NOT EXISTS settings (
         key    TEXT PRIMARY KEY,
         value  TEXT
@@ -270,3 +274,17 @@ class Database:
         await self.run(lambda ex: ex(
             "INSERT INTO settings (key, value) VALUES (?, ?) "
             "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, value)))
+
+    # -- captcha verification ----------------------------------------------
+    async def add_pending(self, user_id: int, joined_at: int) -> None:
+        await self.run(lambda ex: ex(
+            "INSERT INTO pending_verifications (user_id, joined_at) VALUES (?, ?) "
+            "ON CONFLICT (user_id) DO UPDATE SET joined_at = excluded.joined_at", (user_id, joined_at)))
+
+    async def remove_pending(self, user_id: int) -> None:
+        await self.run(lambda ex: ex("DELETE FROM pending_verifications WHERE user_id = ?", (user_id,)))
+
+    async def pending_before(self, cutoff: int) -> list[int]:
+        rows = await self.run(lambda ex: ex(
+            "SELECT user_id FROM pending_verifications WHERE joined_at <= ?", (cutoff,)).fetchall())
+        return [int(r[0]) for r in rows]

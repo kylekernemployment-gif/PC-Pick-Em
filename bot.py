@@ -16,6 +16,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from db import Database
+from features import antiscam, verify, youtube
+from features.roles import ReactionRoles
 from nba import EASTERN, NBAClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -82,6 +84,7 @@ class PickEmBot(commands.Bot):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         intents.message_content = True  # needed for !commands
+        intents.members = verify.is_configured()  # needed to see people join (captcha)
         super().__init__(command_prefix="!", intents=intents, help_command=None)
         self.db = Database(DATABASE_URL, DB_PATH)
         self.http_session: aiohttp.ClientSession | None = None
@@ -96,14 +99,31 @@ class PickEmBot(commands.Bot):
         log.info("Database ready (%s)", "Postgres" if self.db.pg else f"SQLite: {DB_PATH}")
         self.http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
         self.nba = NBAClient(self.http_session, INCLUDE_PRESEASON)
+        await self.load_features()
         try:
             synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
             log.info("Synced %d slash command(s)", len(synced))
         except discord.Forbidden:
             # The rest of the bot still works; only /givepcpoints is missing.
-            log.error("Couldn't register /givepcpoints (Missing Access). Re-invite the bot with the "
+            log.error("Couldn't register slash commands (Missing Access). Re-invite the bot with the "
                       "'bot' AND 'applications.commands' scopes, and check GUILD_ID is your server ID.")
         ticker.start()
+
+    async def load_features(self) -> None:
+        guild = discord.Object(id=GUILD_ID)
+        await self.add_cog(ReactionRoles(self, GUILD_ID), guild=guild)
+        if youtube.is_configured():
+            await self.add_cog(youtube.YouTubeLive(self), guild=guild)
+            log.info("YouTube live notifications on")
+        else:
+            log.info("YouTube live notifications off (set YOUTUBE_API_KEY, YOUTUBE_CHANNEL_ID, "
+                     "YOUTUBE_NOTIFY_CHANNEL_ID to turn on)")
+        if verify.is_configured():
+            await self.add_cog(verify.Verification(self, GUILD_ID, MOD_ROLE), guild=guild)
+        else:
+            log.info("Captcha verification off (set VERIFY_CHANNEL_ID to turn on)")
+        if antiscam.is_enabled():
+            await self.add_cog(antiscam.AntiScam(self, GUILD_ID, MOD_ROLE), guild=guild)
 
     async def close(self) -> None:
         if self.http_session:
@@ -567,6 +587,8 @@ async def give_points(giver: discord.abc.User, member: discord.Member, amount: i
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
     if isinstance(error, app_commands.MissingRole):
         msg = f"⛔ Only members with the **{MOD_ROLE}** role can use this."
+    elif isinstance(error, app_commands.MissingPermissions):
+        msg = "⛔ You need Administrator permission to use this."
     else:
         log.exception("Slash command error", exc_info=error)
         msg = "Something went wrong running that command."
@@ -628,8 +650,8 @@ async def main() -> None:
             raise SystemExit("DISCORD_TOKEN is invalid. Reset it in the Discord developer portal "
                              "and paste the new one into Render.")
         except discord.PrivilegedIntentsRequired:
-            raise SystemExit("Turn on 'Message Content Intent' in the Discord developer portal "
-                             "(Bot page), save, then redeploy.")
+            needed = "'Message Content Intent'" + (" and 'Server Members Intent'" if verify.is_configured() else "")
+            raise SystemExit(f"Turn on {needed} in the Discord developer portal (Bot page), save, then redeploy.")
 
 
 if __name__ == "__main__":

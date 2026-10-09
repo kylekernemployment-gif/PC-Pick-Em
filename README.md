@@ -1,6 +1,15 @@
 # PC Pick Em' 🏀
 
-A Discord bot that runs a daily NBA pick'em for one server.
+One Discord bot for the PC server:
+
+- **NBA pick'em** with PC Points, a leaderboard and win rates (below)
+- **Reaction roles** (merged from the PC-Roles bot)
+- **YouTube live notifications** (merged from the PC-YT-Live-Noti bot)
+- **Captcha verification** for new members, plus an **anti-scam** filter
+
+Each extra feature turns on only when its settings are added in Render. See [Other features](#other-features).
+
+## NBA pick'em
 
 - **12 hours before every NBA game (preseason included)** it posts a poll in your pick'em channel and pre-reacts with 1️⃣ (away team) and 2️⃣ (home team).
 - Only members with the **YouTube Member** (or **Lead Moderator**) role can pick. Anyone else's reaction is removed. Members can only pick **one** team. Reacting to the second one removes it and shows *"You must only react for one team!"*. To switch, remove your first reaction, then click the other one.
@@ -76,3 +85,47 @@ cp .env.example .env   # fill it in, then export the values
 python bot.py
 pytest                 # parser + points logic tests
 ```
+
+## Other features
+
+### Reaction roles
+These are always on. They use the same 5 roles and the same message as the old PC-Roles bot (see `features/roles_config.py`).
+- `/setuproles` (Administrator) posts a fresh roles message in the current channel. The bot remembers it from then on.
+- The bot needs the **Manage Roles** permission. Its role must sit **above** the NBA, NFL, Gaming, YouTube Alerts and PC Community roles in Server Settings → Roles.
+
+### YouTube live notifications
+Every 5 minutes the bot checks your channel. When a new live stream is on air, it posts an `@everyone` embed. Add these in Render → Environment to turn it on:
+
+| Variable | |
+|---|---|
+| `YOUTUBE_API_KEY` | copy it from the old PC-YT-Live-Noti service |
+| `YOUTUBE_CHANNEL_ID` | copy it from the old service. It starts with `UC`. |
+| `YOUTUBE_NOTIFY_CHANNEL_ID` | the Discord channel to post in. This was `CHANNEL_ID` on the old service. |
+
+The bot needs the **Mention Everyone** permission in that channel.
+
+### Captcha verification
+New members only see the verify channel until they pass a captcha. Turn it on with `VERIFY_CHANNEL_ID`.
+1. Developer portal → Bot → turn on **Server Members Intent** → Save.
+2. Create a role named **Verified**. Give the bot **Manage Roles** and **Kick Members**, and drag the bot's role above Verified.
+3. Create a `#verify` channel. Set `VERIFY_CHANNEL_ID` in Render and redeploy.
+4. In `#verify`, run `/setupverify` to post the Verify button.
+5. Run `/verifyeveryone` once, so everyone already in the server gets Verified.
+6. Lock the server down:
+   - Server Settings → Roles → **@everyone** → turn off **View Channels**.
+   - **Verified** role → turn on **View Channels**.
+   - `#verify` channel → Permissions → **@everyone** → allow **View Channel**.
+
+New members get 3 tries and 30 minutes. Accounts younger than 3 days are removed. Anyone removed can rejoin and try again.
+
+| Variable | Default | |
+|---|---|---|
+| `VERIFY_CHANNEL_ID` | — | turns verification on |
+| `VERIFIED_ROLE_NAME` | `Verified` | |
+| `VERIFY_TIMEOUT_MINUTES` | `30` | |
+| `MIN_ACCOUNT_AGE_DAYS` | `3` | set to `0` to allow any account |
+| `MOD_LOG_CHANNEL_ID` | — | optional private channel that logs joins, verifications, kicks and deleted scams |
+
+### Anti-scam
+This is on by default (`ANTI_SCAM=false` turns it off). It deletes free-Nitro, Steam-gift and fake-Discord-link messages and times the sender out for 1 hour. Members who joined in the last 24 hours can't post links (`NEW_MEMBER_LINK_HOURS`). Mods and anyone with Manage Messages are skipped. The bot needs **Manage Messages** and **Moderate Members**.
+
