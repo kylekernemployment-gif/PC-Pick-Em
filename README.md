@@ -57,7 +57,7 @@ A Render free web service **wipes its disk on every restart and deploy**, so poi
 3. Keep it awake. Free web services go to sleep after about 15 minutes without web traffic. The bot pings its own URL every 10 minutes. For extra safety, add a free monitor at <https://uptimerobot.com> that hits `https://<your-service>.onrender.com/health` every 5 minutes.
 
 > **Heads-up about free hours:** Render gives each workspace about 750 free instance hours per month. That covers one always-on service. If your other 2 bots are also free and always on, the three bots together will run out of hours partway through the month. Options:
-> - Put this bot on the $7/month Starter plan (change `plan: free` to `plan: starter`).
+> - Put this bot on the $7/month Starter plan (set `plan: starter` in `render.yaml`, which this repo now uses).
 > - Run it in a separate Render workspace.
 
 Check the logs. You should see `Logged in as PC Pick Em'...`, `Synced 1 slash command(s)` and `Schedule refreshed: N games`.
