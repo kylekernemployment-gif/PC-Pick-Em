@@ -13,19 +13,51 @@ def test_data_loads_all_franchises_and_decades():
 
 
 def test_candidates_respect_positions_and_taken():
-    c = E.candidates("CHI", "1990s", {"C"}, set())
+    find = lambda t, d, n: next(p for p in E.data()["teams"][t]["decades"][d]["players"] if p["name"] == n)
+    full_but_c = {pos: {**find("CHI", "1990s", "Michael Jordan"), "positions": [pos]} for pos in ["PG", "SG", "SF", "PF"]}
+    c = E.candidates("CHI", "1990s", full_but_c)
     assert c and all("C" in p["positions"] for p in c) and len(c) <= 25
-    assert all(p["name"] != "Michael Jordan" for p in E.candidates("CHI", "1990s", {"SG", "SF"}, {"Michael Jordan"}))
+    assert all(p["name"] != "Michael Jordan" for p in E.candidates("CHI", "1990s", {"SG": find("CHI", "1990s", "Michael Jordan")}))
+
+
+def test_kobe_example_reshuffles_and_moves():
+    find = lambda t, d, n: next(p for p in E.data()["teams"][t]["decades"][d]["players"] if p["name"] == n)
+    kobe = find("LAL", "2000s", "Kobe Bryant")
+    assert {"SG", "SF"} <= set(kobe["positions"])
+    g = E.Game(user_id=1, mode="classic")
+    g.team, g.decade = "LAL", "2000s"
+    g.place(kobe, "SG")
+    pure_sg = {**find("CHI", "1990s", "Michael Jordan"), "name": "Pure SG", "positions": ["SG"]}
+    # He fits even though SG is taken: Kobe can slide over.
+    spots = dict(g.placements(pure_sg))
+    assert "SG" in spots and any("Bryant" in m for m in spots["SG"])
+    g.team, g.decade = "CHI", "1990s"
+    moves = g.place(pure_sg, "SG")
+    assert g.lineup["SG"]["name"] == "Pure SG" and g.lineup[[pos for pos, p in g.lineup.items() if p["name"] == "Kobe Bryant"][0]]
+    assert moves and "Bryant" in moves[0]
+    # Manual moves: only to listed positions, swaps only if both fit.
+    for frm, to in g.move_options():
+        assert to in g.lineup[frm]["positions"]
+        other = g.lineup.get(to)
+        assert other is None or frm in other["positions"]
+    # Kobe (SG/SF) can't go back to SG: the pure SG there can't play SF.
+    assert not any(frm == "SF" and to == "SG" for frm, to in g.move_options())
+    # On his own, Kobe moves freely between his positions.
+    g2 = E.Game(user_id=2, mode="classic")
+    g2.team, g2.decade = "LAL", "2000s"
+    g2.place(kobe, "SG")
+    assert ("SG", "SF") in g2.move_options()
+    g2.move("SG", "SF")
+    assert g2.lineup["SF"]["name"] == "Kobe Bryant" and "SG" not in g2.lineup
 
 
 def test_skips_keep_the_other_half_of_the_spin():
     rng = random.Random(3)
-    open_ = set(E.POSITIONS)
-    t, d = E.spin(rng, open_, set())
-    t2, d2 = E.spin(rng, open_, set(), decade=d, not_team=t)
+    t, d = E.spin(rng, {})
+    t2, d2 = E.spin(rng, {}, decade=d, not_team=t)
     assert d2 == d and t2 != t
-    t3, d3 = E.spin(rng, open_, set(), team=t, not_decade=d)
-    assert t3 == t and d3 != d or (t3, d3) != (t, d)
+    t3, d3 = E.spin(rng, {}, team=t, not_decade=d)
+    assert t3 == t and d3 != d
 
 
 def test_full_game_and_scoring():
@@ -42,7 +74,7 @@ def test_full_game_and_scoring():
 
 
 def test_win_curve_and_grades():
-    assert E.wins_for(0.05) == 0 and E.wins_for(2) == 82 and E.wins_for(0.235) == 25
+    assert E.wins_for(0.05) == 0 and E.wins_for(2) == 82 and E.wins_for(0.236) == 25
     assert E.grade_for(82).startswith("S") and E.grade_for(70) == "A" and E.grade_for(10) == "F"
 
 

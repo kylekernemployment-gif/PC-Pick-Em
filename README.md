@@ -145,7 +145,7 @@ This is on by default (`EIGHTYTWO=false` turns it off). It's for YouTube Members
 
 A player's stats are his per-game averages **with that team in that decade**: every season there, weighted by games played. His **awards** come from the same stint (MVP, DPOY, All-NBA, All-Defense, All-Star, ROY, 6MOY, MIP). Awards show while drafting in Classic, and they count toward the score: defensive honors boost team defense, and MVP/All-NBA/All-Star honors give a smaller overall boost.
 
-You get **one team skip and one decade skip** per game. Old franchises count as today's team, so the 1990s Thunder are the Seattle SuperSonics.
+You get **one team skip and one decade skip** per game. **🔀 Move player** lets you shift a drafted player to another position he's played, or swap two players who can play each other's spots. The draft list also includes players who'd fit after a shift, and picking one shows a button like `SG (Bryant → SF)` that makes the move for you. Old franchises count as today's team, so the 1990s Thunder are the Seattle SuperSonics.
 
 After 5 picks the bot rates the lineup on era-adjusted scoring, rebounding, playmaking, steals and blocks. It then shows a projected record, a grade, the best pick and the biggest weakness. Going **82-0 earns +50 PC Points**, once per member per day (`EIGHTYTWO_POINTS`). Set `EIGHTYTWO_CHANNEL_ID` to limit games to one channel.
 

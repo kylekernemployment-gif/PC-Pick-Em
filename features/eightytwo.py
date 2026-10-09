@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import itertools
 import json
 import os
 import random
@@ -34,7 +35,7 @@ TARGETS = {"pts": 125, "reb": 46, "ast": 30, "stl": 8.5, "blk": 7.5}
 WEIGHTS = {"pts": 0.32, "reb": 0.20, "ast": 0.20, "stl": 0.12, "blk": 0.16}
 # Rating -> wins (piecewise linear). Calibrated by simulation: random picks average ~25 wins,
 # sensible picks ~62, and only great, balanced lineups reach 82-0.
-WIN_CURVE = [(0.08, 0), (0.235, 25), (0.756, 62), (0.909, 82)]
+WIN_CURVE = [(0.08, 0), (0.236, 25), (0.770, 62), (0.925, 82)]
 MAX_OPTIONS = 25  # Discord select menu limit
 EASTERN = ZoneInfo("America/New_York")
 
@@ -70,13 +71,39 @@ def era_name(team: str, decade: str) -> str:
     return data()["teams"][team]["decades"][decade]["label"]
 
 
-def candidates(team: str, decade: str, open_positions: set[str], taken: set[str]) -> list[dict]:
+def arrangement(lineup: dict[str, dict], new: dict | None = None,
+                new_pos: str | None = None) -> dict[str, dict] | None:
+    """A valid lineup (position -> player) that adds `new` (at `new_pos` if given), with every
+    player at one of his listed positions and as few existing players moved as possible.
+    None if he can't fit anywhere."""
+    current = list(lineup.items())
+    people = [p for _, p in current] + ([new] if new else [])
+    best, best_moves = None, 99
+    for perm in itertools.permutations(POSITIONS, len(people)):
+        if new_pos and new and perm[-1] != new_pos:
+            continue
+        if any(pos not in person["positions"] for pos, person in zip(perm, people)):
+            continue
+        moves = sum(cur != pos for (cur, _), pos in zip(current, perm))
+        if moves < best_moves:
+            best, best_moves = dict(zip(perm, people)), moves
+    return best
+
+
+def moved_players(before: dict[str, dict], after: dict[str, dict]) -> list[str]:
+    where = {id(p): pos for pos, p in after.items()}
+    return [f"{p['name'].split()[-1]} → {where[id(p)]}" for pos, p in before.items() if where[id(p)] != pos]
+
+
+def candidates(team: str, decade: str, lineup: dict[str, dict]) -> list[dict]:
+    """Players from that roster who fit the lineup, shuffling others to their other positions if needed."""
     roster = data()["teams"][team]["decades"].get(decade, {}).get("players", [])
-    ok = [p for p in roster if p["name"] not in taken and open_positions & set(p["positions"])]
+    taken = {p["name"] for p in lineup.values()}
+    ok = [p for p in roster if p["name"] not in taken and arrangement(lineup, p) is not None]
     return ok[:MAX_OPTIONS]
 
 
-def spin(rng: random.Random, open_positions: set[str], taken: set[str],
+def spin(rng: random.Random, lineup: dict[str, dict],
          team: str | None = None, decade: str | None = None,
          not_team: str | None = None, not_decade: str | None = None) -> tuple[str, str]:
     """Random (team, decade) that has someone draftable. Fix team or decade to reroll only the other."""
@@ -86,10 +113,10 @@ def spin(rng: random.Random, open_positions: set[str], taken: set[str],
              and t != not_team and d != not_decade]
     rng.shuffle(pairs)
     for t, d in pairs:
-        if candidates(t, d, open_positions, taken):
+        if candidates(t, d, lineup):
             return t, d
     if team or decade:  # nothing fits with that constraint: reroll both
-        return spin(rng, open_positions, taken, not_team=not_team, not_decade=not_decade)
+        return spin(rng, lineup, not_team=not_team, not_decade=not_decade)
     raise RuntimeError("No draftable players left")
 
 
@@ -197,17 +224,58 @@ class Game:
     def taken(self) -> set[str]:
         return {p["name"] for p in self.lineup.values()}
 
+    moving: bool = False  # showing the "move a player" menu
+
     def do_spin(self, **kw) -> None:
-        self.team, self.decade = spin(self.rng, self.open_positions, self.taken, **kw)
-        self.options = candidates(self.team, self.decade, self.open_positions, self.taken)
+        self.team, self.decade = spin(self.rng, self.lineup, **kw)
+        self.options = candidates(self.team, self.decade, self.lineup)
         self.pending = None
 
-    def place(self, player: dict, position: str) -> None:
-        self.lineup[position] = {**player, "team": self.team, "decade": self.decade,
-                                 "era_team": era_name(self.team, self.decade)}
+    def placements(self, player: dict) -> list[tuple[str, list[str]]]:
+        """Positions he can take now, each with the moves it would cause (e.g. 'Bryant → SF')."""
+        out = []
+        for pos in POSITIONS:
+            if pos in player["positions"]:
+                after = arrangement(self.lineup, player, pos)
+                if after is not None:
+                    out.append((pos, moved_players(self.lineup, after)))
+        return out
+
+    def place(self, player: dict, position: str) -> list[str]:
+        entry = {**player, "team": self.team, "decade": self.decade, "era_team": era_name(self.team, self.decade)}
+        after = arrangement(self.lineup, entry, position)
+        moves = moved_players(self.lineup, after)
+        self.lineup = after
         self.team = self.decade = None
         self.options, self.pending = [], None
         self.finished = len(self.lineup) == 5
+        return moves
+
+    def move_options(self) -> list[tuple[str, str]]:
+        """(from, to) moves for drafted players: to an open listed position, or a swap
+        with a teammate who can play the other spot."""
+        out = []
+        for frm, p in self.lineup.items():
+            for to in p["positions"]:
+                if to == frm:
+                    continue
+                other = self.lineup.get(to)
+                if other is None or frm in other["positions"]:
+                    out.append((frm, to))
+        return out
+
+    def move(self, frm: str, to: str) -> str:
+        p, other = self.lineup.pop(frm), self.lineup.pop(to, None)
+        self.lineup[to] = p
+        if other:
+            self.lineup[frm] = other
+            text = f"🔀 Swapped **{p['name']}** ({to}) and **{other['name']}** ({frm})."
+        else:
+            text = f"🔀 Moved **{p['name']}** to **{to}**."
+        if self.team:  # refresh the draft list for the current spin
+            self.options = candidates(self.team, self.decade, self.lineup)
+        self.moving = False
+        return text
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +321,7 @@ def game_embed(game: Game, member: discord.abc.User, status: str | None = None,
         else:
             e.add_field(name="​", value="Pick a player from the list below.", inline=False)
     else:
-        e.add_field(name="​", value="Hit **🎰 Spin** for a team and decade.", inline=False)
+        e.add_field(name="​", value=note or "Hit **🎰 Spin** for a team and decade.", inline=False)
     skips = []
     if game.team_skip:
         skips.append("team skip")
@@ -294,13 +362,22 @@ class GameView(discord.ui.View):
         if g.finished:
             self.add_item(self._button("Play again", "🔁", discord.ButtonStyle.success, self.play_again))
             return
+        if g.moving:
+            moves = g.move_options()
+            select = discord.ui.Select(placeholder="Move which player?", min_values=1, max_values=1,
+                                       options=[self._move_option(frm, to) for frm, to in moves][:25])
+            select.callback = self._move_cb(select)
+            self.add_item(select)
+            self.add_item(self._button("Back", "↩️", discord.ButtonStyle.secondary, self.on_cancel_move))
+            return
         if not g.team:
             self.add_item(self._button("Spin", "🎰", discord.ButtonStyle.primary, self.on_spin))
+            self._maybe_move_button()
             return
         if g.pending:
-            for pos in POSITIONS:
-                if pos in g.open_positions and pos in g.pending["positions"]:
-                    self.add_item(self._button(pos, None, discord.ButtonStyle.primary, self._place_cb(pos)))
+            for pos, moves in g.placements(g.pending):
+                label = pos if not moves else f"{pos} ({', '.join(moves)})"
+                self.add_item(self._button(label[:80], None, discord.ButtonStyle.primary, self._place_cb(pos)))
             self.add_item(self._button("Back", "↩️", discord.ButtonStyle.secondary, self.on_back))
             return
         select = discord.ui.Select(placeholder="Draft a player…", min_values=1, max_values=1,
@@ -311,6 +388,17 @@ class GameView(discord.ui.View):
             self.add_item(self._button("Skip team", "⏭️", discord.ButtonStyle.secondary, self.on_skip_team))
         if g.decade_skip:
             self.add_item(self._button("Skip decade", "⏭️", discord.ButtonStyle.secondary, self.on_skip_decade))
+        self._maybe_move_button()
+
+    def _maybe_move_button(self) -> None:
+        if self.game.move_options():
+            self.add_item(self._button("Move player", "🔀", discord.ButtonStyle.secondary, self.on_move))
+
+    def _move_option(self, frm: str, to: str) -> discord.SelectOption:
+        p, other = self.game.lineup[frm], self.game.lineup.get(to)
+        label = (f"{p['name']}: {frm} → {to}" if other is None
+                 else f"Swap {p['name']} ({frm}) ↔ {other['name']} ({to})")
+        return discord.SelectOption(label=label[:100], value=f"{frm}:{to}")
 
     def _option(self, i: int, p: dict) -> discord.SelectOption:
         if self.game.mode == "classic":
@@ -345,11 +433,13 @@ class GameView(discord.ui.View):
             except discord.HTTPException:
                 pass
 
-    async def refresh(self, interaction: discord.Interaction, status: str | None = None) -> None:
+    async def refresh(self, interaction: discord.Interaction, status: str | None = None,
+                      note: str | None = None) -> None:
         view = GameView(self.cog, self.game)
         view.message = self.message
         self.stop()
-        await interaction.response.edit_message(embed=game_embed(self.game, interaction.user, status), view=view)
+        await interaction.response.edit_message(embed=game_embed(self.game, interaction.user, status, note),
+                                                view=view)
 
     # -- callbacks --------------------------------------------------------
     async def on_spin(self, interaction: discord.Interaction, note: str | None = None, **kw) -> None:
@@ -387,9 +477,9 @@ class GameView(discord.ui.View):
         async def cb(interaction: discord.Interaction) -> None:
             g = self.game
             player = g.options[int(select.values[0])]
-            open_for_him = [p for p in POSITIONS if p in g.open_positions and p in player["positions"]]
-            if len(open_for_him) == 1:
-                await self._finish_pick(interaction, player, open_for_him[0])
+            spots = g.placements(player)
+            if len(spots) == 1 and not spots[0][1]:  # only one spot and nobody has to move
+                await self._finish_pick(interaction, player, spots[0][0])
             else:
                 g.pending = player
                 await self.refresh(interaction)
@@ -404,11 +494,27 @@ class GameView(discord.ui.View):
         self.game.pending = None
         await self.refresh(interaction)
 
+    async def on_move(self, interaction: discord.Interaction) -> None:
+        self.game.moving = True
+        self.game.pending = None
+        await self.refresh(interaction, note="🔀 Pick a move. Players can only go to positions they've played.")
+
+    async def on_cancel_move(self, interaction: discord.Interaction) -> None:
+        self.game.moving = False
+        await self.refresh(interaction)
+
+    def _move_cb(self, select: discord.ui.Select):
+        async def cb(interaction: discord.Interaction) -> None:
+            frm, to = select.values[0].split(":")
+            await self.refresh(interaction, note=self.game.move(frm, to))
+        return cb
+
     async def _finish_pick(self, interaction: discord.Interaction, player: dict, pos: str) -> None:
         g = self.game
-        g.place(player, pos)
+        moves = g.place(player, pos)
         if not g.finished:
-            await self.refresh(interaction, f"✅ **{player['name']}** at **{pos}**. Hit **🎰 Spin** for the next pick.")
+            moved = f" Moved {', '.join(moves)}." if moves else ""
+            await self.refresh(interaction, f"✅ **{player['name']}** at **{pos}**.{moved} Hit **🎰 Spin** for the next pick.")
             return
         result = evaluate(g.lineup)
         reward = await self.cog.reward(interaction.user, result)
