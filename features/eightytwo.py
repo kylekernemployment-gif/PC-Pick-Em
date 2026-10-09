@@ -233,7 +233,8 @@ def lineup_lines(game: Game, reveal: bool) -> list[str]:
     return lines
 
 
-def game_embed(game: Game, member: discord.abc.User, status: str | None = None) -> discord.Embed:
+def game_embed(game: Game, member: discord.abc.User, status: str | None = None,
+               note: str | None = None) -> discord.Embed:
     reveal = game.mode == "classic"
     e = discord.Embed(title="🏀 82-0 Challenge", color=discord.Color.orange())
     e.set_author(name=f"{member.display_name} · {MODE_LABEL[game.mode]}", icon_url=member.display_avatar.url)
@@ -244,6 +245,8 @@ def game_embed(game: Game, member: discord.abc.User, status: str | None = None) 
         e.add_field(name="🎰 Your spin", value=f"**{era_name(game.team, game.decade)}** · **{game.decade}**"
                     + (f"  _(today's {team_name(game.team)})_" if era_name(game.team, game.decade) != team_name(game.team) else ""),
                     inline=False)
+        if note:
+            e.add_field(name="\u200b", value=note, inline=False)
         if game.pending:
             e.add_field(name="Where does he play?",
                         value=f"**{game.pending['name']}** — pick an open position below.", inline=False)
@@ -349,30 +352,36 @@ class GameView(discord.ui.View):
         await interaction.response.edit_message(embed=game_embed(self.game, interaction.user, status), view=view)
 
     # -- callbacks --------------------------------------------------------
-    async def on_spin(self, interaction: discord.Interaction, **kw) -> None:
+    async def on_spin(self, interaction: discord.Interaction, note: str | None = None, **kw) -> None:
         g = self.game
+        kept_team, kept_decade = kw.get("team"), kw.get("decade")
         await interaction.response.edit_message(
             embed=game_embed(g, interaction.user, "🎰 Spinning…"), view=None)
         teams = list(data()["teams"])
-        for _ in range(3):  # quick fake spin
-            t = g.rng.choice(teams)
+        for _ in range(3):  # quick fake spin; a skip only spins the half being rerolled
+            team = f"🔒 **{team_name(kept_team)}**" if kept_team else f"**{team_name(g.rng.choice(teams))}**"
+            decade = f"🔒 **{kept_decade}**" if kept_decade else f"**{g.rng.choice(data()['decades'])}**"
             await asyncio.sleep(0.6)
             await interaction.edit_original_response(
-                embed=game_embed(g, interaction.user, f"🎰 Spinning… **{team_name(t)}** · **{g.rng.choice(data()['decades'])}**"))
+                embed=game_embed(g, interaction.user, f"🎰 Spinning… {team} · {decade}"))
         g.do_spin(**kw)
         view = GameView(self.cog, g)
         view.message = self.message
         self.stop()
         await asyncio.sleep(0.6)
-        await interaction.edit_original_response(embed=game_embed(g, interaction.user), view=view)
+        await interaction.edit_original_response(embed=game_embed(g, interaction.user, note=note), view=view)
 
     async def on_skip_team(self, interaction: discord.Interaction) -> None:
-        self.game.team_skip = False
-        await self.on_spin(interaction, decade=self.game.decade, not_team=self.game.team)
+        g = self.game
+        g.team_skip = False
+        await self.on_spin(interaction, note=f"⏭️ Team skipped. You kept the **{g.decade}**.",
+                           decade=g.decade, not_team=g.team)
 
     async def on_skip_decade(self, interaction: discord.Interaction) -> None:
-        self.game.decade_skip = False
-        await self.on_spin(interaction, team=self.game.team, not_decade=self.game.decade)
+        g = self.game
+        g.decade_skip = False
+        await self.on_spin(interaction, note=f"⏭️ Decade skipped. You kept the **{team_name(g.team)}** franchise.",
+                           team=g.team, not_decade=g.decade)
 
     def _select_cb(self, select: discord.ui.Select):
         async def cb(interaction: discord.Interaction) -> None:
