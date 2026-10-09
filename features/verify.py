@@ -8,6 +8,7 @@ new, or not verifying in time gets them kicked. They can rejoin and try again.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import random
@@ -101,6 +102,7 @@ class Verification(commands.Cog):
         self.timeout_min = int(os.getenv("VERIFY_TIMEOUT_MINUTES", "30"))
         self.min_age_days = float(os.getenv("MIN_ACCOUNT_AGE_DAYS", "3"))
         self.codes: dict[int, tuple[str, int]] = {}  # user_id -> (code, tries left)
+        self.bulk_running = False
 
     async def cog_load(self) -> None:
         self.bot.add_view(VerifyView(self))
@@ -246,19 +248,41 @@ class Verification(commands.Cog):
             await interaction.response.send_message(f"⚠️ Create a role named **{self.role_name}** first.",
                                                     ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        if not guild.chunked:
-            await guild.chunk()
+        if self.bulk_running:
+            await interaction.response.send_message("⏳ Already running — check the Verified role's member count.",
+                                                    ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"⏳ Giving **{self.role_name}** to everyone. Big servers take a while (Discord rate limits) — "
+            "I'll post the result in this channel when it's done.", ephemeral=True)
+        self.bulk_running = True
+        self._bulk_task = asyncio.create_task(self._verify_everyone(guild, role, interaction.channel))
+
+    async def _verify_everyone(self, guild: discord.Guild, role: discord.Role, channel) -> None:
         added = failed = 0
-        for member in guild.members:
-            if member.bot or role in member.roles:
-                continue
-            try:
-                await member.add_roles(role, reason="Existing member (verifyeveryone)")
-                added += 1
-            except discord.HTTPException:
-                failed += 1
-        msg = f"✅ Gave **{self.role_name}** to {added} member(s)."
-        if failed:
-            msg += f" Couldn't for {failed} — check that the bot's role is above {self.role_name}."
-        await interaction.followup.send(msg, ephemeral=True)
+        try:
+            if not guild.chunked:
+                await guild.chunk()
+            todo = [m for m in guild.members if not m.bot and role not in m.roles]
+            log.info("verifyeveryone: %d members to update", len(todo))
+            for i, member in enumerate(todo, 1):
+                try:
+                    await member.add_roles(role, reason="Existing member (verifyeveryone)")
+                    added += 1
+                except discord.HTTPException:
+                    failed += 1
+                if i % 100 == 0:
+                    log.info("verifyeveryone: %d/%d done", i, len(todo))
+            msg = f"✅ /verifyeveryone finished: gave **{self.role_name}** to {added} member(s)."
+            if failed:
+                msg += f" Couldn't for {failed} — check that the bot's role is above {self.role_name}, then run it again."
+        except Exception:
+            log.exception("verifyeveryone failed")
+            msg = f"⚠️ /verifyeveryone stopped early after {added} member(s). Run it again to finish."
+        finally:
+            self.bulk_running = False
+        await mod_log(self.bot, msg)
+        try:
+            await channel.send(msg)
+        except discord.HTTPException:
+            pass

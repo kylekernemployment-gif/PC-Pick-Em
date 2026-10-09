@@ -61,6 +61,8 @@ MEMBER_ROLE = os.getenv("MEMBER_ROLE_NAME", "YouTube Member")
 LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "").strip() or 0) or None
 DAILY_LEADERBOARD_HOUR = int(os.getenv("DAILY_LEADERBOARD_HOUR", "10"))  # US Eastern, 24h clock
 DAILY_LEADERBOARD_SIZE = 25
+DAILY_LEADERBOARD = _env_bool("DAILY_LEADERBOARD", "true")  # 10am Top 25 post in the pick'em channel
+LIVE_BOARD_EVERY_SECS = 10 * 60
 POINTS_PER_WIN = int(os.getenv("POINTS_PER_WIN", "100"))
 POST_HOURS_BEFORE = float(os.getenv("POST_HOURS_BEFORE", "12"))
 INCLUDE_PRESEASON = _env_bool("INCLUDE_PRESEASON", "true")
@@ -93,6 +95,9 @@ class PickEmBot(commands.Bot):
         self.last_schedule_refresh = 0.0
         self.last_result_check: dict[str, float] = {}
         self.last_self_ping = 0.0
+        self.last_board_update = 0.0
+        self.last_board_text: str | None = None
+        self.bg_tasks: set[asyncio.Task] = set()
 
     async def setup_hook(self) -> None:
         await self.db.init()
@@ -222,7 +227,7 @@ async def reaction_picks(msg: discord.Message) -> dict[int, set[int]]:
 @tasks.loop(seconds=60)
 async def ticker() -> None:
     for step in (refresh_schedule, post_due_polls, lock_started_games, resolve_finished_games, daily_leaderboard,
-                 self_ping):
+                 update_live_leaderboard, self_ping):
         try:
             await step()
         except Exception:
@@ -330,6 +335,7 @@ async def resolve_finished_games() -> None:
         game = await bot.db.get_game(gid)
         msg = await refresh_poll(game)
         await announce_result(game, msg, winners, total)
+        await refresh_board_soon()
         log.info("Resolved %s: %d/%d correct", gid, len(winners), total)
 
 
@@ -356,13 +362,50 @@ async def announce_result(game: dict, msg: discord.Message | None, winners: list
     await channel.send(text, allowed_mentions=NO_PINGS, **kwargs)
 
 
+async def update_live_leaderboard(force: bool = False) -> None:
+    """Keep one always-current Top 25 message in LEADERBOARD_CHANNEL_ID."""
+    if not LEADERBOARD_CHANNEL_ID:
+        return
+    if not force and time.time() - bot.last_board_update < LIVE_BOARD_EVERY_SECS:
+        return
+    bot.last_board_update = time.time()
+    embed = await leaderboard_embed(DAILY_LEADERBOARD_SIZE, f"🏆 PC Points Leaderboard — Top {DAILY_LEADERBOARD_SIZE}")
+    if embed is None:
+        embed = discord.Embed(title=f"🏆 PC Points Leaderboard — Top {DAILY_LEADERBOARD_SIZE}",
+                              description="Nobody has any PC Points yet. Get picking! 🏀", color=discord.Color.gold())
+    if not force and embed.description == bot.last_board_text:
+        return  # nothing changed
+    embed.set_footer(text="Updates automatically · last updated")
+    embed.timestamp = discord.utils.utcnow()
+    channel = bot.get_channel(LEADERBOARD_CHANNEL_ID) or await bot.fetch_channel(LEADERBOARD_CHANNEL_ID)
+    msg_id = await bot.db.get_setting("leaderboard_message_id")
+    if msg_id:
+        try:
+            await channel.get_partial_message(int(msg_id)).edit(embed=embed)
+            bot.last_board_text = embed.description
+            return
+        except discord.NotFound:
+            pass  # deleted: post a new one
+    msg = await channel.send(embed=embed, allowed_mentions=NO_PINGS)
+    await bot.db.set_setting("leaderboard_message_id", str(msg.id))
+    bot.last_board_text = embed.description
+    log.info("Posted live leaderboard in #%s", getattr(channel, "name", LEADERBOARD_CHANNEL_ID))
+
+
+async def refresh_board_soon() -> None:
+    try:
+        await update_live_leaderboard(force=True)
+    except Exception:
+        log.exception("Live leaderboard update failed")
+
+
 async def daily_leaderboard() -> None:
     """Post the Top 25 once a day at DAILY_LEADERBOARD_HOUR (US Eastern)."""
     now = datetime.now(EASTERN)
     today = now.date().isoformat()
     # Two-hour window so a restart around 10am doesn't skip the day, but a
     # restart in the afternoon doesn't post a late one.
-    if not DAILY_LEADERBOARD_HOUR <= now.hour < DAILY_LEADERBOARD_HOUR + 2:
+    if not DAILY_LEADERBOARD or not DAILY_LEADERBOARD_HOUR <= now.hour < DAILY_LEADERBOARD_HOUR + 2:
         return
     if await bot.db.get_setting("daily_leaderboard_date") == today:
         return
@@ -370,8 +413,7 @@ async def daily_leaderboard() -> None:
     embed = await leaderboard_embed(DAILY_LEADERBOARD_SIZE, f"☀️ Daily PC Points Leaderboard — Top {DAILY_LEADERBOARD_SIZE}")
     if embed is None:
         return
-    channel_id = LEADERBOARD_CHANNEL_ID or CHANNEL_ID
-    channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+    channel = await pickem_channel()
     await channel.send(embed=embed, allowed_mentions=NO_PINGS)
     log.info("Posted daily leaderboard")
 
@@ -552,8 +594,9 @@ async def help_cmd(ctx: commands.Context) -> None:
         f"`/givepcpoints @member amount` — give/take PC Points ({MOD_ROLE} only)\n\n"
         f"Polls go up in <#{CHANNEL_ID}> {POST_HOURS_BEFORE:g} hours before every NBA game. "
         f"React {ONE} or {TWO} (one pick only). Correct pick = +{POINTS_PER_WIN} PC Points.\n"
-        f"The Top {DAILY_LEADERBOARD_SIZE} leaderboard is posted every day at {DAILY_LEADERBOARD_HOUR % 12 or 12}"
-        f"{'am' if DAILY_LEADERBOARD_HOUR < 12 else 'pm'} ET."
+        + (f"The Top {DAILY_LEADERBOARD_SIZE} leaderboard is posted every day at {DAILY_LEADERBOARD_HOUR % 12 or 12}"
+           f"{'am' if DAILY_LEADERBOARD_HOUR < 12 else 'pm'} ET." if DAILY_LEADERBOARD else "")
+        + (f"\nLive leaderboard: <#{LEADERBOARD_CHANNEL_ID}>" if LEADERBOARD_CHANNEL_ID else "")
     )
 
 
@@ -577,6 +620,9 @@ async def givepcpoints_slash(interaction: discord.Interaction, member: discord.M
 
 async def give_points(giver: discord.abc.User, member: discord.Member, amount: int) -> str:
     total = await bot.db.add_points(member.id, amount)
+    task = asyncio.create_task(refresh_board_soon())
+    bot.bg_tasks.add(task)
+    task.add_done_callback(bot.bg_tasks.discard)
     verb = "gave" if amount > 0 else "took"
     log.info("%s %s %d PC Points %s %s", giver, verb, abs(amount), "to" if amount > 0 else "from", member)
     return (f"✅ {giver.mention} {verb} **{abs(amount):,}** PC Points {'to' if amount > 0 else 'from'} "

@@ -1,7 +1,8 @@
-"""YouTube live notifications (ported from the PC-YT-Live-Noti bot).
+"""YouTube notifications (live alerts ported from the PC-YT-Live-Noti bot).
 
-Every 5 minutes: read the channel's RSS feed for the newest video. If it's new
-and it's a live stream that's on air, post an @everyone embed.
+Every 5 minutes: find the channel's newest video. If it's new and it's a live
+stream that's on air, post an @everyone embed. If it's a regular upload and
+YOUTUBE_UPLOAD_CHANNEL_ID is set, ping the YouTube Alerts role there.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import discord
 from discord.ext import commands, tasks
 
 from .common import env_id, log
+from .roles_config import REACTION_ROLES
 
 RSS_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 VIDEOS_API = "https://www.googleapis.com/youtube/v3/videos"
@@ -55,7 +57,13 @@ def parse_video_status(data: dict, video_id: str) -> dict:
         }
     if broadcast == "upcoming":
         return {"status": "upcoming"}
-    return {"status": "none"}
+    if live:
+        return {"status": "vod"}  # replay of a finished live stream / premiere
+    return {
+        "status": "upload",
+        "title": snippet.get("title", ""),
+        "url": f"https://www.youtube.com/watch?v={video_id}",
+    }
 
 
 def is_configured() -> bool:
@@ -69,6 +77,9 @@ class YouTubeLive(commands.Cog):
         self.api_key = os.environ["YOUTUBE_API_KEY"].strip()
         self.yt_channel = os.environ["YOUTUBE_CHANNEL_ID"].strip().strip("'\"").strip()
         self.notify_channel_id = env_id("YOUTUBE_NOTIFY_CHANNEL_ID")
+        # Optional: ping the YouTube Alerts role for regular uploads in their own channel.
+        self.upload_channel_id = env_id("YOUTUBE_UPLOAD_CHANNEL_ID")
+        self.upload_role_id = env_id("YOUTUBE_UPLOAD_ROLE_ID") or REACTION_ROLES["🚨"]
 
     async def cog_load(self) -> None:
         self.check.start()
@@ -123,6 +134,18 @@ class YouTubeLive(commands.Cog):
             log.warning("[YouTube] Couldn't send live notification (will retry): %r", e)
             return False
 
+    async def notify_upload(self, result: dict) -> bool:
+        # A bare link gets Discord's built-in YouTube player embed.
+        text = f"<@&{self.upload_role_id}> 🎬 **New video!** {result['title']}\n{result['url']}"
+        try:
+            channel = self.bot.get_channel(self.upload_channel_id) or await self.bot.fetch_channel(self.upload_channel_id)
+            await channel.send(text, allowed_mentions=discord.AllowedMentions(
+                everyone=False, users=False, roles=[discord.Object(self.upload_role_id)]))
+            return True
+        except discord.HTTPException as e:
+            log.warning("[YouTube] Couldn't send upload alert (will retry): %r", e)
+            return False
+
     @tasks.loop(minutes=5)
     async def check(self) -> None:
         try:
@@ -151,8 +174,12 @@ class YouTubeLive(commands.Cog):
                 log.info("[YouTube] Live notification sent for %s", video_id)
         elif result["status"] == "upcoming":
             log.info("[YouTube] %s is scheduled; waiting for it to go live", video_id)
+        elif result["status"] == "upload" and self.upload_channel_id:
+            if await self.notify_upload(result):
+                await self.bot.db.set_setting(SEEN_KEY, video_id)
+                log.info("[YouTube] Upload alert sent for %s", video_id)
         else:
-            await self.bot.db.set_setting(SEEN_KEY, video_id)  # regular upload, skip
+            await self.bot.db.set_setting(SEEN_KEY, video_id)  # stream replay, or upload alerts off
 
     @check.before_loop
     async def before_check(self) -> None:

@@ -15,7 +15,11 @@ def test_youtube_parsing():
     r = parse_video_status(live, "abc123")
     assert r["status"] == "live" and r["url"].endswith("abc123") and r["thumbnail"] == "t.jpg"
     assert parse_video_status({"items": [{"snippet": {"liveBroadcastContent": "upcoming"}}]}, "x")["status"] == "upcoming"
-    assert parse_video_status({"items": [{"snippet": {"liveBroadcastContent": "none"}}]}, "x")["status"] == "none"
+    up = parse_video_status({"items": [{"snippet": {"liveBroadcastContent": "none", "title": "Vid"}}]}, "x")
+    assert up["status"] == "upload" and up["title"] == "Vid" and up["url"].endswith("x")
+    vod = {"items": [{"snippet": {"liveBroadcastContent": "none"},
+                      "liveStreamingDetails": {"actualStartTime": "a", "actualEndTime": "b"}}]}
+    assert parse_video_status(vod, "x")["status"] == "vod"
     assert parse_video_status({"items": []}, "x")["status"] == "none"
 
 

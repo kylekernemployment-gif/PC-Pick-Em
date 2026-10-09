@@ -28,7 +28,9 @@ Each extra feature turns on only when its settings are added in Render. See [Oth
 | `/givepcpoints @member amount` | **Lead Moderator only.** Gives PC Points. A negative amount takes them away. `!givepcpoints` works too. |
 | `!pickemhelp` | Lists the commands |
 
-Every day at **10am Eastern** the bot posts the **Top 25** leaderboard in the pick'em channel, or in `LEADERBOARD_CHANNEL_ID` if you set one.
+Every day at **10am Eastern** the bot posts the **Top 25** in the pick'em channel (`DAILY_LEADERBOARD=false` turns this off).
+
+If `LEADERBOARD_CHANNEL_ID` is set, the bot also keeps **one live Top 25 message** in that channel. It updates after every graded game, every `/givepcpoints`, and every 10 minutes.
 
 ---
 
@@ -72,7 +74,8 @@ Check the logs. You should see `Logged in as PC Pick Em'...`, `Synced 1 slash co
 | `DATABASE_URL` | — | Postgres URL. If it's missing, the bot uses a local SQLite file, which is fine for testing on your PC. |
 | `MOD_ROLE_NAME` | `Lead Moderator` | role allowed to use `/givepcpoints` |
 | `MEMBER_ROLE_NAME` | `YouTube Member` | role allowed to use `!leaderboard`, `!pcpoints` and `!winrate` |
-| `LEADERBOARD_CHANNEL_ID` | pick'em channel | where the daily Top 25 is posted |
+| `LEADERBOARD_CHANNEL_ID` | — | channel for the always-updated Top 25 message |
+| `DAILY_LEADERBOARD` | `true` | 10am Top 25 post in the pick'em channel |
 | `DAILY_LEADERBOARD_HOUR` | `10` | hour for the daily leaderboard, US Eastern, 24-hour clock |
 | `POINTS_PER_WIN` | `100` | |
 | `POST_HOURS_BEFORE` | `12` | |
@@ -104,13 +107,15 @@ Every 5 minutes the bot checks your channel. When a new live stream is on air, i
 
 The bot needs the **Mention Everyone** permission in that channel.
 
+**Upload alerts (optional):** set `YOUTUBE_UPLOAD_CHANNEL_ID` and the bot pings the **YouTube Alerts** role (from the reaction roles) in that channel whenever a regular video is uploaded. Live streams and their replays are skipped, since those already get the `@everyone` alert. Shorts count as uploads. To ping a different role, set `YOUTUBE_UPLOAD_ROLE_ID`. In that channel the bot needs View Channel, Send Messages, Embed Links and **Mention @everyone, @here, and All Roles**.
+
 ### Captcha verification
 New members only see the verify channel until they pass a captcha. Turn it on with `VERIFY_CHANNEL_ID`.
 1. Developer portal → Bot → turn on **Server Members Intent** → Save.
 2. Create a role named **Verified**. Give the bot **Manage Roles** and **Kick Members**, and drag the bot's role above Verified.
 3. Create a `#verify` channel. Set `VERIFY_CHANNEL_ID` in Render and redeploy.
 4. In `#verify`, run `/setupverify` to post the Verify button.
-5. Run `/verifyeveryone` once, so everyone already in the server gets Verified.
+5. Run `/verifyeveryone` once, so everyone already in the server gets Verified. It runs in the background and posts the result in that channel when it's done. Big servers take a while.
 6. Lock the server down:
    - Server Settings → Roles → **@everyone** → turn off **View Channels**.
    - **Verified** role → turn on **View Channels**.
