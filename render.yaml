@@ -1,10 +1,85 @@
 services:
-  - type: web
-    name: pc-pick-em-bot
+  # The bot. A background worker in Ohio: Discord blocked the Oregon web
+  # service's shared IP. Settings are copied from the old service below.
+  - type: worker
+    name: pc-bot
     runtime: python
+    region: ohio
     plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: MOD_ROLE_NAME
+        value: Lead Moderator
+      - key: POINTS_PER_WIN
+        value: "100"
+      - key: POST_HOURS_BEFORE
+        value: "12"
+      - key: INCLUDE_PRESEASON
+        value: "false"
+      - key: DISCORD_TOKEN
+        fromService:
+          type: web
+          name: pc-pick-em-bot
+          envVarKey: DISCORD_TOKEN
+      - key: GUILD_ID
+        fromService:
+          type: web
+          name: pc-pick-em-bot
+          envVarKey: GUILD_ID
+      - key: PICKEM_CHANNEL_ID
+        fromService:
+          type: web
+          name: pc-pick-em-bot
+          envVarKey: PICKEM_CHANNEL_ID
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: pc-pick-em-bot
+          envVarKey: DATABASE_URL
+      - key: YOUTUBE_API_KEY
+        fromService:
+          type: web
+          name: pc-pick-em-bot
+          envVarKey: YOUTUBE_API_KEY
+      - key: YOUTUBE_CHANNEL_ID
+        fromService:
+          type: web
+          name: pc-pick-em-bot
+          envVarKey: YOUTUBE_CHANNEL_ID
+      - key: YOUTUBE_NOTIFY_CHANNEL_ID
+        fromService:
+          type: web
+          name: pc-pick-em-bot
+          envVarKey: YOUTUBE_NOTIFY_CHANNEL_ID
+      - key: YOUTUBE_UPLOAD_CHANNEL_ID
+        fromService:
+          type: web
+          name: pc-pick-em-bot
+          envVarKey: YOUTUBE_UPLOAD_CHANNEL_ID
+      - key: LEADERBOARD_CHANNEL_ID
+        fromService:
+          type: web
+          name: pc-pick-em-bot
+          envVarKey: LEADERBOARD_CHANNEL_ID
+      - key: VERIFY_CHANNEL_ID
+        fromService:
+          type: web
+          name: pc-pick-em-bot
+          envVarKey: VERIFY_CHANNEL_ID
+
+  # Old service: now an idle placeholder on the free plan so two bots never
+  # run at once. It still holds the settings the worker copies; delete it
+  # (and remove this entry) once pc-bot is running.
+  - type: web
+    name: pc-pick-em-bot
+    runtime: python
+    plan: free
+    buildCommand: "true"
+    startCommand: python tools/idle_server.py
     healthCheckPath: /health
     autoDeploy: true
     envVars:
@@ -18,11 +93,3 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
-      - key: MOD_ROLE_NAME
-        value: Lead Moderator
-      - key: POINTS_PER_WIN
-        value: "100"
-      - key: POST_HOURS_BEFORE
-        value: "12"
-      - key: INCLUDE_PRESEASON
-        value: "true"
