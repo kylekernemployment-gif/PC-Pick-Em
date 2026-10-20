@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import time
@@ -111,14 +113,28 @@ class PickEmBot(commands.Bot):
         self.nba = NBAClient(self.http_session, INCLUDE_PRESEASON)
         self.add_view(PollView())  # team buttons keep working after restarts
         await self.load_features()
+        await self.sync_commands()
+        if not ticker.is_running():
+            ticker.start()
+
+    async def sync_commands(self) -> None:
+        """Register slash commands only when they changed, to keep Discord API calls low."""
+        guild = discord.Object(id=GUILD_ID)
+        payload = json.dumps([c.to_dict(self.tree) for c in self.tree.get_commands(guild=guild)], sort_keys=True)
+        digest = hashlib.sha256(payload.encode()).hexdigest()
+        if await self.db.get_setting("commands_hash") == digest:
+            log.info("Slash commands unchanged (%d), skipping sync", len(self.tree.get_commands(guild=guild)))
+            return
         try:
-            synced = await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+            synced = await self.tree.sync(guild=guild)
+            await self.db.set_setting("commands_hash", digest)
             log.info("Synced %d slash command(s)", len(synced))
         except discord.Forbidden:
-            # The rest of the bot still works; only /givepcpoints is missing.
+            # The rest of the bot still works; only the slash commands are missing.
             log.error("Couldn't register slash commands (Missing Access). Re-invite the bot with the "
                       "'bot' AND 'applications.commands' scopes, and check GUILD_ID is your server ID.")
-        ticker.start()
+        except discord.HTTPException as e:
+            log.warning("Couldn't sync slash commands right now (HTTP %s); will try on next start", e.status)
 
     async def load_features(self) -> None:
         guild = discord.Object(id=GUILD_ID)
@@ -738,18 +754,46 @@ async def start_web_server() -> None:
     log.info("Health server listening on :%s", port)
 
 
+def is_blocked(e: discord.HTTPException) -> bool:
+    """Discord/Cloudflare temporarily refusing this server's IP (rate limit or outage)."""
+    return e.status == 429 or e.status >= 500
+
+
 async def main() -> None:
     # Open the port first so Render sees the service as up even while logging in.
     await start_web_server()
     async with bot:
-        try:
-            await bot.start(TOKEN)
-        except discord.LoginFailure:
-            raise SystemExit("DISCORD_TOKEN is invalid. Reset it in the Discord developer portal "
-                             "and paste the new one into Render.")
-        except discord.PrivilegedIntentsRequired:
-            needed = "'Message Content Intent'" + (" and 'Server Members Intent'" if verify.is_configured() else "")
-            raise SystemExit(f"Turn on {needed} in the Discord developer portal (Bot page), save, then redeploy.")
+        delay = 60
+        while True:  # log in, waiting out temporary blocks instead of crash-looping
+            try:
+                await bot.login(TOKEN)
+                break
+            except discord.LoginFailure:
+                raise SystemExit("DISCORD_TOKEN is invalid. Reset it in the Discord developer portal "
+                                 "and paste the new one into Render.")
+            except discord.HTTPException as e:
+                if not is_blocked(e):
+                    raise
+                log.error("Discord is temporarily blocking this server (HTTP %s, usually a Cloudflare rate "
+                          "limit on Render's shared IP). Retrying in %d min instead of restarting.",
+                          e.status, delay // 60)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30 * 60)
+        delay = 60
+        while True:
+            try:
+                await bot.connect(reconnect=True)
+                break
+            except discord.PrivilegedIntentsRequired:
+                needed = "'Message Content Intent'" + (" and 'Server Members Intent'" if verify.is_configured() else "")
+                raise SystemExit(f"Turn on {needed} in the Discord developer portal (Bot page), save, then redeploy.")
+            except discord.HTTPException as e:
+                if not is_blocked(e):
+                    raise
+                log.error("Discord is temporarily blocking this server (HTTP %s). Reconnecting in %d min.",
+                          e.status, delay // 60)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30 * 60)
 
 
 if __name__ == "__main__":
