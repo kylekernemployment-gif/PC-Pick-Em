@@ -30,7 +30,7 @@ Each extra feature turns on only when its settings are added in Render. See [Oth
 | `/givepcpoints @member amount` | **Lead Moderator only.** Gives PC Points. A negative amount takes them away. `!givepcpoints` works too. |
 | `!pickemhelp` | Lists the commands |
 
-**PC Points reset every Monday at 12:00am ET.** Before wiping, the bot posts the week's final Top 10 in the leaderboard channel. Win/loss records (`!winrate`) carry over. Set `WEEKLY_RESET=false` to keep points forever.
+**Two leaderboards.** `#leaderboard` holds two live messages: the **Season** leaderboard, which never resets during the season, and the **Weekly** leaderboard, which resets every **Sunday at 12:00am ET**. When the week resets, the final weekly Top 10 is posted in the pick'em channel. Every point earned counts toward both. `!pcpoints` shows both totals, and `!leaderboard` shows both Top 10s.
 
 If `LEADERBOARD_CHANNEL_ID` is set, the bot also keeps **one live Top 25 message** in that channel. It updates after every graded game, every `/givepcpoints`, and every 10 minutes.
 
@@ -76,8 +76,8 @@ Check the logs. You should see `Logged in as PC Pick Em'...`, `Synced 1 slash co
 | `DATABASE_URL` | — | Postgres URL. If it's missing, the bot uses a local SQLite file, which is fine for testing on your PC. |
 | `MOD_ROLE_NAME` | `Lead Moderator` | role allowed to use `/givepcpoints` |
 | `MEMBER_ROLE_NAMES` | `YouTube Member,Players Choice` | comma-separated paid-member roles allowed to play pick'em and 82-0 and use `!leaderboard`, `!pcpoints` and `!winrate` |
-| `LEADERBOARD_CHANNEL_ID` | — | channel for the always-updated Top 25 message |
-| `WEEKLY_RESET` | `true` | wipe PC Points every Monday 12am ET (final standings are posted first) |
+| `LEADERBOARD_CHANNEL_ID` | — | channel for the two live Top 25 messages (season and weekly) |
+| `WEEKLY_RESET` | `true` | reset weekly PC Points every Sunday 12am ET (season points keep counting) |
 | `SEASON_LABEL` | `2026-27` | changing it wipes points and win/loss records once, for a fresh season |
 | `POINTS_PER_WIN` | `100` | |
 | `POST_HOURS_BEFORE` | `12` | |

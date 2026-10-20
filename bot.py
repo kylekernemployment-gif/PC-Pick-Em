@@ -9,7 +9,7 @@ import logging
 import os
 import time
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import aiohttp
 import discord
@@ -66,7 +66,7 @@ ALLOWED_ROLES = (*MEMBER_ROLES, MOD_ROLE)
 MEMBERS_LABEL = " & ".join(MEMBER_ROLES) + " members"  # e.g. "YouTube Member & Players Choice members"
 LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "").strip() or 0) or None
 LEADERBOARD_SIZE = 25
-WEEKLY_RESET = _env_bool("WEEKLY_RESET", "true")  # wipe PC Points every Monday 12:00am ET
+WEEKLY_RESET = _env_bool("WEEKLY_RESET", "true")  # reset weekly PC Points every Sunday 12:00am ET
 SEASON = os.getenv("SEASON_LABEL", "2026-27")      # changing this wipes points + records once
 LIVE_BOARD_EVERY_SECS = 10 * 60
 POINTS_PER_WIN = int(os.getenv("POINTS_PER_WIN", "100"))
@@ -102,7 +102,7 @@ class PickEmBot(commands.Bot):
         self.last_result_check: dict[str, float] = {}
         self.last_self_ping = 0.0
         self.last_board_update = 0.0
-        self.last_board_text: str | None = None
+        self.last_board_text: dict[str, str] = {}
         self.bg_tasks: set[asyncio.Task] = set()
         self.polls_upgraded = False
 
@@ -421,34 +421,56 @@ async def announce_result(game: dict, msg: discord.Message | None, winners: list
     await channel.send(text, allowed_mentions=NO_PINGS, **kwargs)
 
 
+BOARDS = (  # (setting key for the message, season?, title, footer)
+    ("season_leaderboard_message_id", True, f"🏆 Season Leaderboard — Top {LEADERBOARD_SIZE}",
+     "Season PC Points never reset"),
+    ("leaderboard_message_id", False, f"📅 Weekly Leaderboard — Top {LEADERBOARD_SIZE}",
+     "Resets every Sunday at 12am ET"),
+)
+
+
 async def update_live_leaderboard(force: bool = False) -> None:
-    """Keep one always-current Top 25 message in LEADERBOARD_CHANNEL_ID."""
+    """Keep two always-current messages in LEADERBOARD_CHANNEL_ID: season (top) and weekly."""
     if not LEADERBOARD_CHANNEL_ID:
         return
     if not force and time.time() - bot.last_board_update < LIVE_BOARD_EVERY_SECS:
         return
     bot.last_board_update = time.time()
-    embed = await leaderboard_embed(LEADERBOARD_SIZE, f"🏆 PC Points Leaderboard — This Week's Top {LEADERBOARD_SIZE}")
-    if embed is None:
-        embed = discord.Embed(title=f"🏆 PC Points Leaderboard — This Week's Top {LEADERBOARD_SIZE}",
-                              description="Nobody has any PC Points yet. Get picking! 🏀", color=discord.Color.gold())
-    if not force and embed.description == bot.last_board_text:
-        return  # nothing changed
-    embed.set_footer(text=("Resets every Monday 12am ET · " if WEEKLY_RESET else "") + "Updates automatically · last updated")
-    embed.timestamp = discord.utils.utcnow()
     channel = bot.get_channel(LEADERBOARD_CHANNEL_ID) or await bot.fetch_channel(LEADERBOARD_CHANNEL_ID)
-    msg_id = await bot.db.get_setting("leaderboard_message_id")
-    if msg_id:
-        try:
-            await channel.get_partial_message(int(msg_id)).edit(embed=embed)
-            bot.last_board_text = embed.description
-            return
-        except discord.NotFound:
-            pass  # deleted: post a new one
-    msg = await channel.send(embed=embed, allowed_mentions=NO_PINGS)
-    await bot.db.set_setting("leaderboard_message_id", str(msg.id))
-    bot.last_board_text = embed.description
-    log.info("Posted live leaderboard in #%s", getattr(channel, "name", LEADERBOARD_CHANNEL_ID))
+
+    # First time with two boards: repost so the season board sits above the weekly one.
+    if not await bot.db.get_setting("season_leaderboard_message_id"):
+        old = await bot.db.get_setting("leaderboard_message_id")
+        if old:
+            try:
+                await channel.get_partial_message(int(old)).delete()
+            except discord.HTTPException:
+                pass
+            await bot.db.set_setting("leaderboard_message_id", "")
+        bot.last_board_text = {}
+
+    for key, season, title, footer in BOARDS:
+        embed = await leaderboard_embed(LEADERBOARD_SIZE, title, season=season)
+        if embed is None:
+            embed = discord.Embed(title=title, description="Nobody has any PC Points yet. Get picking! 🏀",
+                                  color=discord.Color.gold())
+        if not force and embed.description == bot.last_board_text.get(key):
+            continue  # nothing changed
+        embed.set_footer(text=f"{footer} · Updates automatically · last updated")
+        embed.timestamp = discord.utils.utcnow()
+        msg_id = await bot.db.get_setting(key)
+        if msg_id:
+            try:
+                await channel.get_partial_message(int(msg_id)).edit(embed=embed)
+                bot.last_board_text[key] = embed.description
+                continue
+            except discord.NotFound:
+                pass  # deleted: post a new one
+        msg = await channel.send(embed=embed, allowed_mentions=NO_PINGS)
+        await bot.db.set_setting(key, str(msg.id))
+        bot.last_board_text[key] = embed.description
+        log.info("Posted %s leaderboard in #%s", "season" if season else "weekly",
+                 getattr(channel, "name", LEADERBOARD_CHANNEL_ID))
 
 
 async def refresh_board_soon() -> None:
@@ -459,8 +481,8 @@ async def refresh_board_soon() -> None:
 
 
 def week_id(now: datetime) -> str:
-    year, week, _ = now.isocalendar()  # weeks start Monday
-    return f"{year}-W{week:02d}"
+    """The date of the Sunday that started this week (weeks start Sunday 12am ET)."""
+    return (now.date() - timedelta(days=(now.weekday() + 1) % 7)).isoformat()
 
 
 async def post_to_board_channel(embed: discord.Embed) -> None:
@@ -475,7 +497,7 @@ async def season_reset() -> None:
     if await bot.db.get_setting(key):
         return
     await bot.db.set_setting(key, datetime.now(EASTERN).isoformat())
-    await bot.db.set_setting("weekly_reset_week", week_id(datetime.now(EASTERN)))
+    await bot.db.set_setting("weekly_reset_sunday", week_id(datetime.now(EASTERN)))
     await bot.db.reset_points()
     await bot.db.clear_graded_picks()
     await refresh_board_soon()
@@ -483,25 +505,27 @@ async def season_reset() -> None:
 
 
 async def weekly_reset() -> None:
-    """Every Monday at 12:00am ET: post last week's final standings, then wipe PC Points."""
+    """Every Sunday at 12:00am ET: post last week's final standings, then reset weekly PC Points
+    (season points keep counting)."""
     if not WEEKLY_RESET:
         return
     this_week = week_id(datetime.now(EASTERN))
-    last = await bot.db.get_setting("weekly_reset_week")
+    last = await bot.db.get_setting("weekly_reset_sunday")
     if last is None:  # first run: start counting from this week, don't wipe
-        await bot.db.set_setting("weekly_reset_week", this_week)
+        await bot.db.set_setting("weekly_reset_sunday", this_week)
         return
     if last == this_week:
         return
-    await bot.db.set_setting("weekly_reset_week", this_week)
+    await bot.db.set_setting("weekly_reset_sunday", this_week)
     final = await leaderboard_embed(10, "🏆 Final standings for the week")
     if final is not None:
-        final.description += "\n\nPC Points have been reset. New week, new race! 🏀"
-        try:
-            await post_to_board_channel(final)
+        final.description += "\n\nWeekly PC Points have been reset. New week, new race! 🏀"
+        try:  # posted in the pick'em channel so #leaderboard keeps just the two live boards
+            channel = await pickem_channel()
+            await channel.send(embed=final, allowed_mentions=NO_PINGS)
         except discord.HTTPException as e:
             log.warning("Couldn't post weekly standings: %r", e)
-    await bot.db.reset_points()
+    await bot.db.reset_weekly_points()
     await refresh_board_soon()
     log.info("Weekly reset done (%s)", this_week)
 
@@ -549,8 +573,8 @@ async def upgrade_reaction_polls() -> None:
 # Commands
 # ---------------------------------------------------------------------------
 
-async def leaderboard_embed(limit: int, title: str) -> discord.Embed | None:
-    rows = await bot.db.leaderboard(limit)
+async def leaderboard_embed(limit: int, title: str, season: bool = False) -> discord.Embed | None:
+    rows = await bot.db.leaderboard(limit, season=season)
     if not rows:
         return None
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
@@ -582,10 +606,10 @@ async def can_play_id(guild_id: int, user_id: int) -> bool:
 @bot.command(name="leaderboard", aliases=["lb"])
 @commands.has_any_role(*ALLOWED_ROLES)
 async def leaderboard_cmd(ctx: commands.Context) -> None:
-    embed = await leaderboard_embed(10, "🏆 PC Points Leaderboard — Top 10")
-    if embed is None:
-        await ctx.send("Nobody has any PC Points yet. Get picking! 🏀")
-        return
+    embed = discord.Embed(title="🏆 PC Points Leaderboard — Top 10", color=discord.Color.gold())
+    for season, name in ((False, "📅 This week"), (True, "🏆 Season")):
+        board = await leaderboard_embed(10, name, season=season)
+        embed.add_field(name=name, value=board.description if board else "Nobody yet. Get picking! 🏀")
     await ctx.send(embed=embed, allowed_mentions=NO_PINGS)
 
 
@@ -596,12 +620,12 @@ async def pcpoints_cmd(ctx: commands.Context, *, member: discord.Member | None =
         await ctx.send(f"⛔ Only **{MOD_ROLE}** can check someone else's PC Points.")
         return
     member = member or ctx.author
-    points, rank = await bot.db.get_points(member.id)
+    week, week_rank = await bot.db.get_points(member.id)
+    season, season_rank = await bot.db.get_points(member.id, season=True)
     who = "You have" if member == ctx.author else f"{member.mention} has"
-    text = f"💰 {who} **{points:,}** PC Points."
-    if rank:
-        text += f" (Rank #{rank})"
-    await ctx.send(text, allowed_mentions=NO_PINGS)
+    rank = lambda r: f" (Rank #{r})" if r else ""
+    await ctx.send(f"💰 {who} **{week:,}** PC Points this week{rank(week_rank)} · "
+                   f"**{season:,}** this season{rank(season_rank)}.", allowed_mentions=NO_PINGS)
 
 
 @bot.command(name="winrate", aliases=["record"])
@@ -623,14 +647,14 @@ async def winrate_cmd(ctx: commands.Context, member: discord.Member | None = Non
 async def help_cmd(ctx: commands.Context) -> None:
     await ctx.send(
         "**PC Pick Em' commands**\n"
-        f"`!leaderboard` — Top 10 PC Point holders ({MEMBERS_LABEL})\n"
+        f"`!leaderboard` — Top 10 this week and this season ({MEMBERS_LABEL})\n"
         f"`!pcpoints` — your PC Points total ({MEMBERS_LABEL})\n"
         f"`!pcpoints [member]` — someone else's PC Points ({MOD_ROLE} only)\n"
         f"`!winrate [@member]` — pick'em win % and record ({MEMBERS_LABEL})\n"
         f"`/givepcpoints @member amount` — give/take PC Points ({MOD_ROLE} only)\n\n"
         f"Polls go up in <#{CHANNEL_ID}> {POST_HOURS_BEFORE:g} hours before every NBA game. "
         f"Tap a team's button (you can switch until tip-off). Correct pick = +{POINTS_PER_WIN} PC Points.\n"
-        + ("PC Points reset every Monday at 12am ET." if WEEKLY_RESET else "")
+        + ("Weekly PC Points reset every Sunday at 12am ET; season points never reset." if WEEKLY_RESET else "")
         + (f"\nLive leaderboard: <#{LEADERBOARD_CHANNEL_ID}>" if LEADERBOARD_CHANNEL_ID else "")
     )
 

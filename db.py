@@ -50,8 +50,9 @@ SCHEMA = [
     )""",
     "CREATE INDEX IF NOT EXISTS picks_user_idx ON picks (user_id)",
     """CREATE TABLE IF NOT EXISTS users (
-        user_id  BIGINT PRIMARY KEY,
-        points   BIGINT NOT NULL DEFAULT 0
+        user_id        BIGINT PRIMARY KEY,
+        points         BIGINT NOT NULL DEFAULT 0,  -- this week (reset every week)
+        season_points  BIGINT NOT NULL DEFAULT 0   -- whole season (never reset weekly)
     )""",
     """CREATE TABLE IF NOT EXISTS pending_verifications (
         user_id    BIGINT PRIMARY KEY,
@@ -62,6 +63,13 @@ SCHEMA = [
         value  TEXT
     )""",
 ]
+
+
+# Adds to both this week's and the season's PC Points.
+ADD_POINTS_SQL = (
+    "INSERT INTO users (user_id, points, season_points) VALUES (?, ?, ?) "
+    "ON CONFLICT (user_id) DO UPDATE SET points = users.points + excluded.points, "
+    "season_points = users.season_points + excluded.season_points")
 
 
 class Database:
@@ -114,6 +122,13 @@ class Database:
             for stmt in SCHEMA:
                 ex(stmt)
         await self.run(fn)
+        try:  # databases created before season points existed
+            await self.run(lambda ex: ex("SELECT season_points FROM users LIMIT 1"))
+        except Exception:
+            def migrate(ex):
+                ex("ALTER TABLE users ADD COLUMN season_points BIGINT NOT NULL DEFAULT 0")
+                ex("UPDATE users SET season_points = points")
+            await self.run(migrate)
 
     # -- games ------------------------------------------------------------
     async def upsert_games(self, games: list) -> None:
@@ -200,9 +215,7 @@ class Database:
                 "SELECT user_id FROM picks WHERE game_id = ? AND correct = 1", (game_id,)).fetchall()]
             total = ex("SELECT COUNT(*) FROM picks WHERE game_id = ?", (game_id,)).fetchone()[0]
             for uid in winners:
-                ex("INSERT INTO users (user_id, points) VALUES (?, ?) "
-                   "ON CONFLICT (user_id) DO UPDATE SET points = users.points + excluded.points",
-                   (uid, points))
+                ex(ADD_POINTS_SQL, (uid, points, points))
             return winners, total
         return await self.run(fn)
 
@@ -235,26 +248,26 @@ class Database:
     # -- points & stats ---------------------------------------------------
     async def add_points(self, user_id: int, amount: int) -> int:
         def fn(ex):
-            ex("INSERT INTO users (user_id, points) VALUES (?, ?) "
-               "ON CONFLICT (user_id) DO UPDATE SET points = users.points + excluded.points",
-               (user_id, amount))
+            ex(ADD_POINTS_SQL, (user_id, amount, amount))
             return ex("SELECT points FROM users WHERE user_id = ?", (user_id,)).fetchone()[0]
         return int(await self.run(fn))
 
-    async def get_points(self, user_id: int) -> tuple[int, int | None]:
-        """Returns (points, rank). Rank is None if the user has no points."""
+    async def get_points(self, user_id: int, season: bool = False) -> tuple[int, int | None]:
+        """Returns (points, rank) for this week, or the season. Rank is None with no points."""
+        col = "season_points" if season else "points"
         def fn(ex):
-            row = ex("SELECT points FROM users WHERE user_id = ?", (user_id,)).fetchone()
+            row = ex(f"SELECT {col} FROM users WHERE user_id = ?", (user_id,)).fetchone()
             points = int(row[0]) if row else 0
             if points <= 0:
                 return points, None
-            higher = ex("SELECT COUNT(*) FROM users WHERE points > ?", (points,)).fetchone()[0]
+            higher = ex(f"SELECT COUNT(*) FROM users WHERE {col} > ?", (points,)).fetchone()[0]
             return points, int(higher) + 1
         return await self.run(fn)
 
-    async def leaderboard(self, limit: int = 10) -> list[tuple[int, int]]:
+    async def leaderboard(self, limit: int = 10, season: bool = False) -> list[tuple[int, int]]:
+        col = "season_points" if season else "points"
         rows = await self.run(lambda ex: ex(
-            "SELECT user_id, points FROM users WHERE points > 0 ORDER BY points DESC, user_id LIMIT ?",
+            f"SELECT user_id, {col} FROM users WHERE {col} > 0 ORDER BY {col} DESC, user_id LIMIT ?",
             (limit,)).fetchall())
         return [(int(u), int(p)) for u, p in rows]
 
@@ -290,8 +303,12 @@ class Database:
         return [int(r[0]) for r in rows]
 
     # -- resets -----------------------------------------------------------
+    async def reset_weekly_points(self) -> None:
+        """New week: everyone's weekly PC Points back to 0 (season points stay)."""
+        await self.run(lambda ex: ex("UPDATE users SET points = 0"))
+
     async def reset_points(self) -> None:
-        """Wipe everyone's PC Points (win/loss records are kept)."""
+        """New season: wipe weekly and season PC Points (win/loss records are kept)."""
         await self.run(lambda ex: ex("DELETE FROM users"))
 
     async def clear_graded_picks(self) -> None:
