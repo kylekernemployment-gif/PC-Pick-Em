@@ -774,6 +774,7 @@ async def main() -> None:
             except discord.HTTPException as e:
                 if not is_blocked(e):
                     raise
+                await bot.http.close()  # each login attempt opens a new HTTP session
                 log.error("Discord is temporarily blocking this server (HTTP %s, usually a Cloudflare rate "
                           "limit on Render's shared IP). Retrying in %d min instead of restarting.",
                           e.status, delay // 60)
