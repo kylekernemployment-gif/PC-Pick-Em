@@ -26,10 +26,11 @@ Each extra feature turns on only when its settings are added in Render. See [Oth
 | `!pcpoints` | Your PC Points total and rank. Needs the **YouTube Member** or **Lead Moderator** role. |
 | `!pcpoints <member>` | **Lead Moderator only.** Someone else's PC Points. Accepts a mention, username or ID. |
 | `!winrate [@member]` | Pick'em record, for example `55% win rate, 55-45 record`. Needs the **YouTube Member** or **Lead Moderator** role. |
+| `/pickemstatus` | **Lead Moderator only.** Lists the next games and when each poll goes up (private reply). |
 | `/givepcpoints @member amount` | **Lead Moderator only.** Gives PC Points. A negative amount takes them away. `!givepcpoints` works too. |
 | `!pickemhelp` | Lists the commands |
 
-Every day at **10am Eastern** the bot posts the **Top 25** in the pick'em channel (`DAILY_LEADERBOARD=false` turns this off).
+**PC Points reset every Monday at 12:00am ET.** Before wiping, the bot posts the week's final Top 10 in the leaderboard channel. Win/loss records (`!winrate`) carry over. Set `WEEKLY_RESET=false` to keep points forever.
 
 If `LEADERBOARD_CHANNEL_ID` is set, the bot also keeps **one live Top 25 message** in that channel. It updates after every graded game, every `/givepcpoints`, and every 10 minutes.
 
@@ -76,8 +77,8 @@ Check the logs. You should see `Logged in as PC Pick Em'...`, `Synced 1 slash co
 | `MOD_ROLE_NAME` | `Lead Moderator` | role allowed to use `/givepcpoints` |
 | `MEMBER_ROLE_NAMES` | `YouTube Member,Players Choice` | comma-separated paid-member roles allowed to play pick'em and 82-0 and use `!leaderboard`, `!pcpoints` and `!winrate` |
 | `LEADERBOARD_CHANNEL_ID` | — | channel for the always-updated Top 25 message |
-| `DAILY_LEADERBOARD` | `true` | 10am Top 25 post in the pick'em channel |
-| `DAILY_LEADERBOARD_HOUR` | `10` | hour for the daily leaderboard, US Eastern, 24-hour clock |
+| `WEEKLY_RESET` | `true` | wipe PC Points every Monday 12am ET (final standings are posted first) |
+| `SEASON_LABEL` | `2026-27` | changing it wipes points and win/loss records once, for a fresh season |
 | `POINTS_PER_WIN` | `100` | |
 | `POST_HOURS_BEFORE` | `12` | |
 | `INCLUDE_PRESEASON` | `true` | polls for preseason games too (good for testing). Set to `false` to only do regular season + playoffs |

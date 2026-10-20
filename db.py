@@ -288,3 +288,18 @@ class Database:
         rows = await self.run(lambda ex: ex(
             "SELECT user_id FROM pending_verifications WHERE joined_at <= ?", (cutoff,)).fetchall())
         return [int(r[0]) for r in rows]
+
+    # -- resets -----------------------------------------------------------
+    async def reset_points(self) -> None:
+        """Wipe everyone's PC Points (win/loss records are kept)."""
+        await self.run(lambda ex: ex("DELETE FROM users"))
+
+    async def clear_graded_picks(self) -> None:
+        """Forget picks from finished/void games (resets win rates); open polls keep their picks."""
+        await self.run(lambda ex: ex(
+            "DELETE FROM picks WHERE game_id IN (SELECT game_id FROM games WHERE status IN ('final', 'void'))"))
+
+    async def upcoming_games(self, now: int, limit: int = 8) -> list[dict]:
+        return await self.run(lambda ex: self._games(
+            ex, "status IN ('scheduled', 'open', 'locked') AND tip_utc > ? - 4 * 3600", (now,))[:limit])
+

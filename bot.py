@@ -63,9 +63,9 @@ MEMBER_ROLES = tuple(r.strip() for r in os.getenv(
 ALLOWED_ROLES = (*MEMBER_ROLES, MOD_ROLE)
 MEMBERS_LABEL = " & ".join(MEMBER_ROLES) + " members"  # e.g. "YouTube Member & Players Choice members"
 LEADERBOARD_CHANNEL_ID = int(os.getenv("LEADERBOARD_CHANNEL_ID", "").strip() or 0) or None
-DAILY_LEADERBOARD_HOUR = int(os.getenv("DAILY_LEADERBOARD_HOUR", "10"))  # US Eastern, 24h clock
-DAILY_LEADERBOARD_SIZE = 25
-DAILY_LEADERBOARD = _env_bool("DAILY_LEADERBOARD", "true")  # 10am Top 25 post in the pick'em channel
+LEADERBOARD_SIZE = 25
+WEEKLY_RESET = _env_bool("WEEKLY_RESET", "true")  # wipe PC Points every Monday 12:00am ET
+SEASON = os.getenv("SEASON_LABEL", "2026-27")      # changing this wipes points + records once
 LIVE_BOARD_EVERY_SECS = 10 * 60
 POINTS_PER_WIN = int(os.getenv("POINTS_PER_WIN", "100"))
 POST_HOURS_BEFORE = float(os.getenv("POST_HOURS_BEFORE", "12"))
@@ -285,7 +285,8 @@ async def reaction_picks(msg: discord.Message) -> dict[int, set[int]]:
 
 @tasks.loop(seconds=60)
 async def ticker() -> None:
-    for step in (upgrade_reaction_polls, refresh_schedule, post_due_polls, lock_started_games, resolve_finished_games, daily_leaderboard,
+    for step in (season_reset, weekly_reset, upgrade_reaction_polls, refresh_schedule, post_due_polls,
+                 lock_started_games, resolve_finished_games,
                  update_live_leaderboard, self_ping):
         try:
             await step()
@@ -411,13 +412,13 @@ async def update_live_leaderboard(force: bool = False) -> None:
     if not force and time.time() - bot.last_board_update < LIVE_BOARD_EVERY_SECS:
         return
     bot.last_board_update = time.time()
-    embed = await leaderboard_embed(DAILY_LEADERBOARD_SIZE, f"🏆 PC Points Leaderboard — Top {DAILY_LEADERBOARD_SIZE}")
+    embed = await leaderboard_embed(LEADERBOARD_SIZE, f"🏆 PC Points Leaderboard — This Week's Top {LEADERBOARD_SIZE}")
     if embed is None:
-        embed = discord.Embed(title=f"🏆 PC Points Leaderboard — Top {DAILY_LEADERBOARD_SIZE}",
+        embed = discord.Embed(title=f"🏆 PC Points Leaderboard — This Week's Top {LEADERBOARD_SIZE}",
                               description="Nobody has any PC Points yet. Get picking! 🏀", color=discord.Color.gold())
     if not force and embed.description == bot.last_board_text:
         return  # nothing changed
-    embed.set_footer(text="Updates automatically · last updated")
+    embed.set_footer(text=("Resets every Monday 12am ET · " if WEEKLY_RESET else "") + "Updates automatically · last updated")
     embed.timestamp = discord.utils.utcnow()
     channel = bot.get_channel(LEADERBOARD_CHANNEL_ID) or await bot.fetch_channel(LEADERBOARD_CHANNEL_ID)
     msg_id = await bot.db.get_setting("leaderboard_message_id")
@@ -441,23 +442,52 @@ async def refresh_board_soon() -> None:
         log.exception("Live leaderboard update failed")
 
 
-async def daily_leaderboard() -> None:
-    """Post the Top 25 once a day at DAILY_LEADERBOARD_HOUR (US Eastern)."""
-    now = datetime.now(EASTERN)
-    today = now.date().isoformat()
-    # Two-hour window so a restart around 10am doesn't skip the day, but a
-    # restart in the afternoon doesn't post a late one.
-    if not DAILY_LEADERBOARD or not DAILY_LEADERBOARD_HOUR <= now.hour < DAILY_LEADERBOARD_HOUR + 2:
-        return
-    if await bot.db.get_setting("daily_leaderboard_date") == today:
-        return
-    await bot.db.set_setting("daily_leaderboard_date", today)
-    embed = await leaderboard_embed(DAILY_LEADERBOARD_SIZE, f"☀️ Daily PC Points Leaderboard — Top {DAILY_LEADERBOARD_SIZE}")
-    if embed is None:
-        return
-    channel = await pickem_channel()
+def week_id(now: datetime) -> str:
+    year, week, _ = now.isocalendar()  # weeks start Monday
+    return f"{year}-W{week:02d}"
+
+
+async def post_to_board_channel(embed: discord.Embed) -> None:
+    channel_id = LEADERBOARD_CHANNEL_ID or CHANNEL_ID
+    channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
     await channel.send(embed=embed, allowed_mentions=NO_PINGS)
-    log.info("Posted daily leaderboard")
+
+
+async def season_reset() -> None:
+    """Once per SEASON label: fresh start (points and win/loss records from earlier games)."""
+    key = f"season_reset:{SEASON}"
+    if await bot.db.get_setting(key):
+        return
+    await bot.db.set_setting(key, datetime.now(EASTERN).isoformat())
+    await bot.db.set_setting("weekly_reset_week", week_id(datetime.now(EASTERN)))
+    await bot.db.reset_points()
+    await bot.db.clear_graded_picks()
+    await refresh_board_soon()
+    log.info("Season reset for %s: PC Points and records cleared", SEASON)
+
+
+async def weekly_reset() -> None:
+    """Every Monday at 12:00am ET: post last week's final standings, then wipe PC Points."""
+    if not WEEKLY_RESET:
+        return
+    this_week = week_id(datetime.now(EASTERN))
+    last = await bot.db.get_setting("weekly_reset_week")
+    if last is None:  # first run: start counting from this week, don't wipe
+        await bot.db.set_setting("weekly_reset_week", this_week)
+        return
+    if last == this_week:
+        return
+    await bot.db.set_setting("weekly_reset_week", this_week)
+    final = await leaderboard_embed(10, "🏆 Final standings for the week")
+    if final is not None:
+        final.description += "\n\nPC Points have been reset. New week, new race! 🏀"
+        try:
+            await post_to_board_channel(final)
+        except discord.HTTPException as e:
+            log.warning("Couldn't post weekly standings: %r", e)
+    await bot.db.reset_points()
+    await refresh_board_soon()
+    log.info("Weekly reset done (%s)", this_week)
 
 
 async def self_ping() -> None:
@@ -584,8 +614,7 @@ async def help_cmd(ctx: commands.Context) -> None:
         f"`/givepcpoints @member amount` — give/take PC Points ({MOD_ROLE} only)\n\n"
         f"Polls go up in <#{CHANNEL_ID}> {POST_HOURS_BEFORE:g} hours before every NBA game. "
         f"Tap a team's button (you can switch until tip-off). Correct pick = +{POINTS_PER_WIN} PC Points.\n"
-        + (f"The Top {DAILY_LEADERBOARD_SIZE} leaderboard is posted every day at {DAILY_LEADERBOARD_HOUR % 12 or 12}"
-           f"{'am' if DAILY_LEADERBOARD_HOUR < 12 else 'pm'} ET." if DAILY_LEADERBOARD else "")
+        + ("PC Points reset every Monday at 12am ET." if WEEKLY_RESET else "")
         + (f"\nLive leaderboard: <#{LEADERBOARD_CHANNEL_ID}>" if LEADERBOARD_CHANNEL_ID else "")
     )
 
@@ -606,6 +635,34 @@ async def givepcpoints_slash(interaction: discord.Interaction, member: discord.M
         return
     await interaction.response.send_message(await give_points(interaction.user, member, amount),
                                             allowed_mentions=NO_PINGS)
+
+
+@bot.tree.command(name="pickemstatus", description="Show the next NBA games and when their pick'em polls go up",
+                  guild=discord.Object(id=GUILD_ID))
+@app_commands.checks.has_role(MOD_ROLE)
+async def pickemstatus(interaction: discord.Interaction) -> None:
+    now = int(time.time())
+    window = int(POST_HOURS_BEFORE * 3600)
+    games = await bot.db.upcoming_games(now)
+    refreshed = int(bot.last_schedule_refresh)
+    lines = [f"📅 Schedule last loaded: " + (f"<t:{refreshed}:R>" if refreshed else "**not yet** (check the Render logs)"),
+             f"Polls go up {POST_HOURS_BEFORE:g}h before tip-off in <#{CHANNEL_ID}>.", ""]
+    for g in games:
+        matchup = f"**{g['away_tri']} @ {g['home_tri']}** · tip <t:{g['tip_utc']}:f>"
+        if g["status"] == "open":
+            state = f"🟢 poll is up ({await bot.db.pick_count(g['game_id'])} picks)"
+        elif g["status"] == "locked":
+            state = "🔒 in progress, waiting for the final"
+        elif g["postponed"]:
+            state = "⚠️ postponed"
+        elif g["time_tbd"]:
+            state = "⏳ tip time TBD, poll waits until it's set"
+        else:
+            state = f"🕒 poll posts <t:{g['tip_utc'] - window}:R>"
+        lines.append(f"{matchup}\n   {state}")
+    if not games:
+        lines.append("No upcoming games loaded. If there are games today, check the Render logs for schedule errors.")
+    await interaction.response.send_message("\n".join(lines)[:1990], ephemeral=True)
 
 
 async def give_points(giver: discord.abc.User, member: discord.Member, amount: int) -> str:
