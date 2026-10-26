@@ -523,7 +523,10 @@ async def import_old_data() -> None:
     try:
         stats = await bot.db.import_from(IMPORT_DATABASE_URL, week_id(datetime.now(EASTERN)))
     except Exception as e:
-        log.warning("Old database not reachable yet (%s); will retry in 30 min", str(e).splitlines()[0][:200])
+        text = str(e)
+        reason = ("Neon is still locked (free quota used up)" if "quota" in text.lower()
+                  else text.splitlines()[0][:200] if text else type(e).__name__)
+        log.warning("Old database not reachable yet: %s. Will retry in 30 min.", reason)
         return
     await bot.db.set_setting("import_done", datetime.now(EASTERN).isoformat())
     log.info("Imported old data: %s", stats)
