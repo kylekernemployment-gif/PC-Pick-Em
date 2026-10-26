@@ -90,3 +90,14 @@ def test_settings(tmp_path):
         await db.set_setting("daily_leaderboard_date", "2026-10-10")
         assert await db.get_setting("daily_leaderboard_date") == "2026-10-10"
     asyncio.run(go())
+
+
+def test_restore_list_matches_old_leaderboard():
+    import os
+    os.environ.setdefault("DISCORD_TOKEN", "x"); os.environ.setdefault("GUILD_ID", "1")
+    os.environ.setdefault("PICKEM_CHANNEL_ID", "2")
+    import bot
+    assert len(bot.RESTORE) == 18                                   # old season board had 18 people
+    assert sum(s for _, s, _ in bot.RESTORE) == 21750                # season points total
+    assert sorted(w for _, _, w in bot.RESTORE if w) == [100] * 7 + [150]  # old weekly board
+    assert bot._norm("I GOT 5️⃣ ON IT") == bot._norm("I GOT 5 ON IT")

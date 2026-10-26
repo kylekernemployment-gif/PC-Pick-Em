@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import time
+import unicodedata
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -17,7 +18,7 @@ from aiohttp import web
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from db import Database
+from db import ADD_POINTS_SQL, Database
 from features import antiscam, eightytwo, verify, youtube
 from features.roles import ReactionRoles
 from nba import EASTERN, NBAClient
@@ -303,7 +304,7 @@ async def reaction_picks(msg: discord.Message) -> dict[int, set[int]]:
 
 @tasks.loop(seconds=60)
 async def ticker() -> None:
-    for step in (season_reset, winrate_reset, weekly_reset, upgrade_reaction_polls, refresh_schedule,
+    for step in (season_reset, winrate_reset, restore_points, weekly_reset, upgrade_reaction_polls, refresh_schedule,
                  post_due_polls,
                  lock_started_games, resolve_finished_games,
                  update_live_leaderboard, self_ping):
@@ -505,6 +506,65 @@ async def season_reset() -> None:
     await bot.db.clear_graded_picks()
     await refresh_board_soon()
     log.info("Season reset for %s: PC Points and records cleared", SEASON)
+
+
+# Points restored from the old leaderboard messages after the move off Neon:
+# (member: display name or user ID, season points, this week's points). Applied once.
+RESTORE_KEY = "points_restore:2026-10-26"
+RESTORE = [
+    ("WayneUpRed", 2750, 150), ("BigAdamWest", 2000, 100), ("Z07", 1900, 0), ("Maino", 1900, 0),
+    ("key254_", 1500, 0),  # shown as "Kyle"
+    ("Snowbirds Sneakers", 1400, 100), ("thejonathanfraser", 1400, 100), ("JD", 1100, 0),
+    ("Casper-020", 1100, 100), (1279588019975749652, 1000, 100), (156968352462536704, 700, 0),
+    ("Samiam", 700, 0), ("I GOT 5 ON IT", 700, 0), (1528556041661452417, 700, 0),
+    (358030012827303936, 600, 100), ("Madmax", 600, 0), ("PC_Rawn", 300, 100), ("based god", 200, 0),
+]
+
+
+def _norm(name: str) -> str:
+    """Compare names loosely: case, spaces, emoji and decorations ignored ('I GOT 5️⃣ ON IT' == 'igot5onit')."""
+    return "".join(ch for ch in unicodedata.normalize("NFKD", name or "").lower() if ch.isalnum())
+
+
+def find_member(guild: discord.Guild, who: str) -> tuple[discord.Member | None, str]:
+    """Exact display-name match first, then a loose match on display/global/user name. Must be unique."""
+    for same in (lambda a, b: a == b, lambda a, b: a.lower() == b.lower()):
+        exact = [m for m in guild.members if not m.bot and same(m.display_name or "", who)]
+        if len(exact) == 1:
+            return exact[0], ""
+    loose = [m for m in guild.members if not m.bot
+             and _norm(who) in {_norm(m.display_name), _norm(m.global_name or ""), _norm(m.name)}]
+    if len(loose) == 1:
+        return loose[0], ""
+    return None, f"{len(exact) or len(loose)} matches" if (exact or loose) else "no match"
+
+
+async def restore_points() -> None:
+    """One-time: add back the points from the old leaderboard (season and weekly)."""
+    if not RESTORE or await bot.db.get_setting(RESTORE_KEY):
+        return
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return
+    if not guild.chunked:
+        await guild.chunk()
+    applied, missed = [], []
+    for who, season, week in RESTORE:
+        if isinstance(who, int):
+            user_id, label = who, f"<@{who}>"
+        else:
+            member, why = find_member(guild, who)
+            if member is None:
+                missed.append(f"{who} ({why}): {season:,} season / {week:,} weekly")
+                continue
+            user_id, label = member.id, f"{who} -> {member} ({member.id})"
+        await bot.db.run(lambda ex, u=user_id, w=week, s=season: ex(ADD_POINTS_SQL, (u, w, s)))
+        applied.append(label)
+    await bot.db.set_setting(RESTORE_KEY, datetime.now(EASTERN).isoformat())
+    log.info("Restored points for %d member(s): %s", len(applied), "; ".join(applied))
+    if missed:
+        log.warning("Could NOT restore (give these with /givepcpoints): %s", " | ".join(missed))
+    await refresh_board_soon()
 
 
 async def winrate_reset() -> None:
