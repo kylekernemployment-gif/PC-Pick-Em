@@ -320,3 +320,43 @@ class Database:
         return await self.run(lambda ex: self._games(
             ex, "status IN ('scheduled', 'open', 'locked') AND tip_utc > ? - 4 * 3600", (now,))[:limit])
 
+    # -- one-time import from an old database ------------------------------
+    async def import_from(self, url: str, current_week: str) -> dict:
+        """Merge points, pick records and polls from an old Postgres database (e.g. Neon)
+        into this one. Raises if the old database can't be reached, so the caller can retry.
+        Weekly points only carry over if the old data is from the current week."""
+        def read() -> dict:
+            import psycopg
+
+            with psycopg.connect(url, connect_timeout=15) as conn:
+                cols = {r[0] for r in conn.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name = 'users'")}
+                season_col = "season_points" if "season_points" in cols else "points"
+                users = conn.execute(f"SELECT user_id, points, {season_col} FROM users").fetchall()
+                picks = conn.execute("SELECT game_id, user_id, choice, correct FROM picks").fetchall()
+                games = conn.execute(f"SELECT {', '.join(GAME_COLS)} FROM games").fetchall()
+                week = conn.execute("SELECT value FROM settings WHERE key = 'weekly_reset_sunday'").fetchone()
+            return {"users": users, "picks": picks, "games": games, "week": week[0] if week else None}
+
+        old = await asyncio.to_thread(read)
+        same_week = old["week"] == current_week
+
+        def write(ex) -> dict:
+            for row in old["games"]:
+                g = dict(zip(GAME_COLS, row))
+                mine = ex("SELECT status FROM games WHERE game_id = ?", (g["game_id"],)).fetchone()
+                # Keep the old poll if this database hasn't posted its own for that game yet.
+                if mine is None or (mine[0] == "scheduled" and g["status"] != "scheduled"):
+                    ex("DELETE FROM games WHERE game_id = ?", (g["game_id"],))
+                    ex(f"INSERT INTO games ({', '.join(GAME_COLS)}) VALUES ({', '.join('?' * len(GAME_COLS))})",
+                       tuple(g[c] for c in GAME_COLS))
+            for game_id, user_id, choice, correct in old["picks"]:
+                ex("INSERT INTO picks (game_id, user_id, choice, correct) VALUES (?, ?, ?, ?) "
+                   "ON CONFLICT (game_id, user_id) DO NOTHING", (game_id, user_id, choice, correct))
+            for user_id, week_points, season_points in old["users"]:
+                ex(ADD_POINTS_SQL,
+                   (user_id, int(week_points or 0) if same_week else 0, int(season_points or 0)))
+            return {"users": len(old["users"]), "picks": len(old["picks"]), "games": len(old["games"]),
+                    "weekly_points": same_week}
+        return await self.run(write)
+

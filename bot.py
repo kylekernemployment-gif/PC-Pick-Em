@@ -72,6 +72,10 @@ LIVE_BOARD_EVERY_SECS = 10 * 60
 POINTS_PER_WIN = int(os.getenv("POINTS_PER_WIN", "100"))
 POST_HOURS_BEFORE = float(os.getenv("POST_HOURS_BEFORE", "12"))
 INCLUDE_PRESEASON = _env_bool("INCLUDE_PRESEASON", "true")
+# Old database to copy points and records from, once it's reachable (e.g. Neon after a quota lock).
+IMPORT_DATABASE_URL = (os.getenv("IMPORT_DATABASE_URL", "").strip().removeprefix("psql").strip().strip("'\"")
+                       or None)
+IMPORT_RETRY_SECS = 30 * 60
 # A DB_PATH on a persistent disk (SQLite) takes priority over a DATABASE_URL (Postgres).
 DB_PATH = os.getenv("DB_PATH", "").strip() or None
 DATABASE_URL = None if DB_PATH else _database_url()
@@ -107,6 +111,7 @@ class PickEmBot(commands.Bot):
         self.last_board_text: dict[str, str] = {}
         self.bg_tasks: set[asyncio.Task] = set()
         self.polls_upgraded = False
+        self.last_import_try = 0.0
 
     async def setup_hook(self) -> None:
         await self.db.init()
@@ -303,7 +308,8 @@ async def reaction_picks(msg: discord.Message) -> dict[int, set[int]]:
 
 @tasks.loop(seconds=60)
 async def ticker() -> None:
-    for step in (season_reset, weekly_reset, upgrade_reaction_polls, refresh_schedule, post_due_polls,
+    for step in (season_reset, import_old_data, weekly_reset, upgrade_reaction_polls, refresh_schedule,
+                 post_due_polls,
                  lock_started_games, resolve_finished_games,
                  update_live_leaderboard, self_ping):
         try:
@@ -504,6 +510,24 @@ async def season_reset() -> None:
     await bot.db.clear_graded_picks()
     await refresh_board_soon()
     log.info("Season reset for %s: PC Points and records cleared", SEASON)
+
+
+async def import_old_data() -> None:
+    """Copy points, win/loss records and polls from IMPORT_DATABASE_URL once it can be reached.
+    Retries every 30 minutes (Neon refuses connections while its free quota is used up)."""
+    if not IMPORT_DATABASE_URL or await bot.db.get_setting("import_done"):
+        return
+    if time.time() - bot.last_import_try < IMPORT_RETRY_SECS:
+        return
+    bot.last_import_try = time.time()
+    try:
+        stats = await bot.db.import_from(IMPORT_DATABASE_URL, week_id(datetime.now(EASTERN)))
+    except Exception as e:
+        log.warning("Old database not reachable yet (%s); will retry in 30 min", str(e).splitlines()[0][:200])
+        return
+    await bot.db.set_setting("import_done", datetime.now(EASTERN).isoformat())
+    log.info("Imported old data: %s", stats)
+    await refresh_board_soon()
 
 
 async def weekly_reset() -> None:

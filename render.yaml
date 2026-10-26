@@ -41,6 +41,11 @@ services:
           envVarKey: PICKEM_CHANNEL_ID
       - key: DB_PATH  # SQLite file on the persistent disk below (replaces Neon)
         value: /var/data/pickem.db
+      - key: IMPORT_DATABASE_URL  # old Neon database: points/records are copied once it unlocks
+        fromService:
+          type: web
+          name: pc-pick-em-bot
+          envVarKey: DATABASE_URL
       - key: YOUTUBE_API_KEY
         fromService:
           type: web
