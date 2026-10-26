@@ -97,7 +97,7 @@ def test_awards_follow_the_team_and_count():
     assert E.player_value(wallace) > E.player_value(no_awards)
 
 
-def test_82_0_reward_by_mode_once_a_day_each(tmp_path):
+def test_82_0_reward_by_mode_once_a_day(tmp_path):
     import asyncio
     import types
     from db import Database
@@ -113,8 +113,9 @@ def test_82_0_reward_by_mode_once_a_day_each(tmp_path):
         assert await cog.reward(me, not_perfect, "classic") == ""
         assert "+200" in await cog.reward(me, perfect, "classic")
         assert "already earned" in await cog.reward(me, perfect, "classic")
-        assert "+300" in await cog.reward(me, perfect, "hoopiq")
-        assert "already earned" in await cog.reward(me, perfect, "hoopiq")
-        assert await bot.db.get_points(7) == (500, 1)
-        assert await bot.db.get_points(7, season=True) == (500, 1)
+        assert "already earned" in await cog.reward(me, perfect, "hoopiq")  # one reward per day total
+        assert await bot.db.get_points(7) == (200, 1)
+        assert await bot.db.get_points(7, season=True) == (200, 1)
+        other = types.SimpleNamespace(id=8)
+        assert "+300" in await cog.reward(other, perfect, "hoopiq")
     asyncio.run(go())

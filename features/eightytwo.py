@@ -581,10 +581,9 @@ class EightyTwoZero(commands.Cog):
             return ""
         points = self.reward_points[mode]
         today = datetime.now(EASTERN).date().isoformat()
-        key = f"eightytwo_reward:{member.id}:{mode}"  # once per day in each mode
+        key = f"eightytwo_reward:{member.id}"  # one 82-0 reward per day, either mode
         if await self.bot.db.get_setting(key) == today:
-            return (f"🎉 Perfect season! (You already earned today's +{points} PC Points in "
-                    f"{MODE_LABEL[mode].split(' (')[0]}. Come back tomorrow.)")
+            return "🎉 Perfect season! (You already earned today's 82-0 reward. Come back tomorrow.)"
         await self.bot.db.set_setting(key, today)
         total = await self.bot.db.add_points(member.id, points)
         hook = getattr(self.bot, "points_changed", None)
