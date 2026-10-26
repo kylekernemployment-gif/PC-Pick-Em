@@ -35,7 +35,7 @@ TARGETS = {"pts": 125, "reb": 46, "ast": 30, "stl": 8.5, "blk": 7.5}
 WEIGHTS = {"pts": 0.32, "reb": 0.20, "ast": 0.20, "stl": 0.12, "blk": 0.16}
 # Rating -> wins (piecewise linear). Calibrated by simulation: random picks average ~25 wins,
 # sensible picks ~62, and only great, balanced lineups reach 82-0.
-WIN_CURVE = [(0.08, 0), (0.236, 25), (0.770, 62), (0.925, 82)]
+WIN_CURVE = [(0.08, 0), (0.236, 25), (0.770, 62), (0.903, 82)]
 MAX_OPTIONS = 25  # Discord select menu limit
 EASTERN = ZoneInfo("America/New_York")
 
@@ -528,7 +528,7 @@ class GameView(discord.ui.View):
             await self.refresh(interaction, f"✅ **{player['name']}** at **{pos}**.{moved} Hit **🎰 Spin** for the next pick.")
             return
         result = evaluate(g.lineup)
-        reward = await self.cog.reward(interaction.user, result)
+        reward = await self.cog.reward(interaction.user, result, g.mode)
         self.cog.games.pop(g.user_id, None)
         view = GameView(self.cog, g)
         view.message = self.message
@@ -544,7 +544,9 @@ class EightyTwoZero(commands.Cog):
         self.bot = bot
         self.allowed_roles, self.members_label = allowed_roles, members_label
         self.channel_id = env_id("EIGHTYTWO_CHANNEL_ID")
-        self.reward_points = int(os.getenv("EIGHTYTWO_POINTS", "50"))
+        # PC Points for going 82-0, by mode (Hoop IQ hides stats, so it pays more).
+        self.reward_points = {"classic": int(os.getenv("EIGHTYTWO_POINTS_CLASSIC", "200")),
+                              "hoopiq": int(os.getenv("EIGHTYTWO_POINTS_HOOPIQ", "300"))}
         self.games: dict[int, Game] = {}
 
     async def cog_load(self) -> None:
@@ -574,17 +576,19 @@ class EightyTwoZero(commands.Cog):
         await interaction.response.send_message(embed=game_embed(game, interaction.user), view=view)
         view.message = await interaction.original_response()
 
-    async def reward(self, member: discord.abc.User, result: dict) -> str:
+    async def reward(self, member: discord.abc.User, result: dict, mode: str) -> str:
         if result["wins"] != 82:
             return ""
+        points = self.reward_points[mode]
         today = datetime.now(EASTERN).date().isoformat()
-        key = f"eightytwo_reward:{member.id}"
+        key = f"eightytwo_reward:{member.id}:{mode}"  # once per day in each mode
         if await self.bot.db.get_setting(key) == today:
-            return f"🎉 Perfect season! (You already earned today's +{self.reward_points} PC Points — come back tomorrow.)"
+            return (f"🎉 Perfect season! (You already earned today's +{points} PC Points in "
+                    f"{MODE_LABEL[mode].split(' (')[0]}. Come back tomorrow.)")
         await self.bot.db.set_setting(key, today)
-        total = await self.bot.db.add_points(member.id, self.reward_points)
+        total = await self.bot.db.add_points(member.id, points)
         hook = getattr(self.bot, "points_changed", None)
         if hook:
             asyncio.create_task(hook())
-        log.info("82-0: %s went 82-0, +%d PC Points", member, self.reward_points)
-        return f"🎉 **+{self.reward_points} PC Points!** You now have **{total:,}**."
+        log.info("82-0: %s went 82-0 (%s), +%d PC Points", member, mode, points)
+        return f"🎉 **+{points} PC Points!** You now have **{total:,}** this week."

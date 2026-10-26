@@ -148,7 +148,7 @@ A player's stats are his per-game averages **with that team in that decade**: ev
 
 You get **one team skip and one decade skip** per game. **🔀 Move player** lets you shift a drafted player to another position he's played, or swap two players who can play each other's spots. The draft list also includes players who'd fit after a shift, and picking one shows a button like `SG (Bryant → SF)` that makes the move for you. Old franchises count as today's team, so the 1990s Thunder are the Seattle SuperSonics.
 
-After 5 picks the bot rates the lineup on era-adjusted scoring, rebounding, playmaking, steals and blocks. It then shows a projected record, a grade, the best pick and the biggest weakness. Going **82-0 earns +50 PC Points**, once per member per day (`EIGHTYTWO_POINTS`). Set `EIGHTYTWO_CHANNEL_ID` to limit games to one channel.
+After 5 picks the bot rates the lineup on era-adjusted scoring, rebounding, playmaking, steals and blocks. It then shows a projected record, a grade, the best pick and the biggest weakness. Going **82-0 earns +200 PC Points in Classic or +300 in Hoop IQ**, once per member per day in each mode (`EIGHTYTWO_POINTS_CLASSIC`, `EIGHTYTWO_POINTS_HOOPIQ`). Set `EIGHTYTWO_CHANNEL_ID` to limit games to one channel.
 
 Player data comes from Basketball-Reference, via [sumitrodatta/bball-reference-datasets](https://github.com/sumitrodatta/bball-reference-datasets). It's bundled in `features/data/` and rebuilt with `tools/build_8202_data.py`. Steals and blocks weren't tracked before 1973-74, so those are estimated (marked `*`).
 

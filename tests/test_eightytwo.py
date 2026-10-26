@@ -95,3 +95,26 @@ def test_awards_follow_the_team_and_count():
     assert E.def_rate(wallace) > 1.5  # 4x DPOY, 5x All-Defense
     no_awards = {**wallace, "awards": {}}
     assert E.player_value(wallace) > E.player_value(no_awards)
+
+
+def test_82_0_reward_by_mode_once_a_day_each(tmp_path):
+    import asyncio
+    import types
+    from db import Database
+
+    async def go():
+        bot = types.SimpleNamespace(db=Database(path=str(tmp_path / "r.db")))
+        await bot.db.init()
+        cog = E.EightyTwoZero.__new__(E.EightyTwoZero)
+        cog.bot = bot
+        cog.reward_points = {"classic": 200, "hoopiq": 300}
+        me = types.SimpleNamespace(id=7)
+        perfect, not_perfect = {"wins": 82}, {"wins": 81}
+        assert await cog.reward(me, not_perfect, "classic") == ""
+        assert "+200" in await cog.reward(me, perfect, "classic")
+        assert "already earned" in await cog.reward(me, perfect, "classic")
+        assert "+300" in await cog.reward(me, perfect, "hoopiq")
+        assert "already earned" in await cog.reward(me, perfect, "hoopiq")
+        assert await bot.db.get_points(7) == (500, 1)
+        assert await bot.db.get_points(7, season=True) == (500, 1)
+    asyncio.run(go())
