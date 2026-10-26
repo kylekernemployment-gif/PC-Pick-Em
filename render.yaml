@@ -9,6 +9,10 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     autoDeploy: true
+    disk:  # keeps points, picks and settings across deploys and restarts
+      name: pc-bot-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
@@ -35,11 +39,8 @@ services:
           type: web
           name: pc-pick-em-bot
           envVarKey: PICKEM_CHANNEL_ID
-      - key: DATABASE_URL
-        fromService:
-          type: web
-          name: pc-pick-em-bot
-          envVarKey: DATABASE_URL
+      - key: DB_PATH  # SQLite file on the persistent disk below (replaces Neon)
+        value: /var/data/pickem.db
       - key: YOUTUBE_API_KEY
         fromService:
           type: web

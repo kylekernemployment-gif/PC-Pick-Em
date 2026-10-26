@@ -72,8 +72,10 @@ LIVE_BOARD_EVERY_SECS = 10 * 60
 POINTS_PER_WIN = int(os.getenv("POINTS_PER_WIN", "100"))
 POST_HOURS_BEFORE = float(os.getenv("POST_HOURS_BEFORE", "12"))
 INCLUDE_PRESEASON = _env_bool("INCLUDE_PRESEASON", "true")
-DATABASE_URL = _database_url()
-DB_PATH = os.getenv("DB_PATH", "pickem.db")
+# A DB_PATH on a persistent disk (SQLite) takes priority over a DATABASE_URL (Postgres).
+DB_PATH = os.getenv("DB_PATH", "").strip() or None
+DATABASE_URL = None if DB_PATH else _database_url()
+DB_PATH = DB_PATH or "pickem.db"
 
 SCHEDULE_REFRESH_SECS = 60 * 60     # re-read the NBA schedule hourly
 RESULT_CHECK_AFTER_SECS = 90 * 60   # start checking for a final score 1.5h after tip

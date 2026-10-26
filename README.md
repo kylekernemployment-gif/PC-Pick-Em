@@ -48,7 +48,10 @@ If `LEADERBOARD_CHANNEL_ID` is set, the bot also keeps **one live Top 25 message
 5. In Discord, turn on **User Settings → Advanced → Developer Mode**. Right-click your server and choose **Copy Server ID** (`GUILD_ID`). Right-click the pick'em channel and choose **Copy Channel ID** (`PICKEM_CHANNEL_ID`).
 6. Make sure a role named exactly **Lead Moderator** exists. If yours has a different name, set `MOD_ROLE_NAME`.
 
-### 2. Database (free and permanent)
+### 2. Database
+On Render the bot keeps its data in a SQLite file on a 1 GB persistent disk (`DB_PATH=/var/data/pickem.db`, set up by `render.yaml`). The steps below are only needed if you'd rather use an outside Postgres database via `DATABASE_URL`.
+
+#### Optional: outside Postgres
 A Render free web service **wipes its disk on every restart and deploy**, so points need to live in a database outside the bot.
 1. Create a free Postgres database at <https://neon.tech>. Supabase also works.
 2. Copy the connection string (`postgresql://...?sslmode=require`). This is `DATABASE_URL`.

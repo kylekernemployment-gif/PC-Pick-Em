@@ -23,4 +23,4 @@ REACTION_ROLES = {
 
 # The roles message that's already in your server. /setuproles posts a new one
 # and the bot remembers its ID from then on.
-DEFAULT_MESSAGE_ID = 1489501492057608365
+DEFAULT_MESSAGE_ID = 1557983475179589705  # the message posted with /setuproles
