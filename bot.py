@@ -108,6 +108,7 @@ class PickEmBot(commands.Bot):
         self.last_board_text: dict[str, str] = {}
         self.bg_tasks: set[asyncio.Task] = set()
         self.polls_upgraded = False
+        self.last_import_try = 0.0
 
     async def setup_hook(self) -> None:
         await self.db.init()
@@ -304,7 +305,7 @@ async def reaction_picks(msg: discord.Message) -> dict[int, set[int]]:
 
 @tasks.loop(seconds=60)
 async def ticker() -> None:
-    for step in (season_reset, winrate_reset, restore_points, weekly_reset, upgrade_reaction_polls, refresh_schedule,
+    for step in (season_reset, winrate_reset, restore_points, import_old_records, weekly_reset, upgrade_reaction_polls, refresh_schedule,
                  post_due_polls,
                  lock_started_games, resolve_finished_games,
                  update_live_leaderboard, self_ping):
@@ -565,6 +566,31 @@ async def restore_points() -> None:
     if missed:
         log.warning("Could NOT restore (give these with /givepcpoints): %s", " | ".join(missed))
     await refresh_board_soon()
+
+
+IMPORT_DATABASE_URL = (os.getenv("IMPORT_DATABASE_URL", "").strip().removeprefix("psql").strip().strip("'\"")
+                       or None)
+IMPORT_RETRY_SECS = 60 * 60
+
+
+async def import_old_records() -> None:
+    """Once Neon unlocks (its new month), add the old win/loss records to the new ones.
+    Points aren't imported: they were already restored from the old leaderboard."""
+    if not IMPORT_DATABASE_URL or await bot.db.get_setting("records_import_done"):
+        return
+    if time.time() - bot.last_import_try < IMPORT_RETRY_SECS:
+        return
+    bot.last_import_try = time.time()
+    try:
+        stats = await bot.db.import_records(IMPORT_DATABASE_URL)
+    except Exception as e:
+        text = str(e)
+        reason = ("Neon is still locked (free quota used up)" if "quota" in text.lower()
+                  else text.splitlines()[0][:200] if text else type(e).__name__)
+        log.info("Old win/loss records not available yet: %s. Will retry in 1 hour.", reason)
+        return
+    await bot.db.set_setting("records_import_done", datetime.now(EASTERN).isoformat())
+    log.info("Imported old win/loss records: %s", stats)
 
 
 async def winrate_reset() -> None:

@@ -319,3 +319,33 @@ class Database:
     async def upcoming_games(self, now: int, limit: int = 8) -> list[dict]:
         return await self.run(lambda ex: self._games(
             ex, "status IN ('scheduled', 'open', 'locked') AND tip_utc > ? - 4 * 3600", (now,))[:limit])
+
+    # -- one-time import of old win/loss records ---------------------------
+    async def import_records(self, url: str) -> dict:
+        """Merge graded picks (win/loss records) from an old Postgres database (Neon).
+        Points are NOT imported (they were restored separately). Raises if unreachable."""
+        def read() -> dict:
+            import psycopg
+
+            with psycopg.connect(url, connect_timeout=15) as conn:
+                picks = conn.execute(
+                    "SELECT game_id, user_id, choice, correct FROM picks WHERE correct IS NOT NULL").fetchall()
+                ids = sorted({p[0] for p in picks})
+                games = conn.execute(f"SELECT {', '.join(GAME_COLS)} FROM games WHERE game_id = ANY(%s)",
+                                     (ids,)).fetchall() if ids else []
+            return {"picks": picks, "games": games}
+
+        old = await asyncio.to_thread(read)
+
+        def write(ex) -> dict:
+            for row in old["games"]:  # keep the game rows so future resets treat these picks like any other
+                ex(f"INSERT INTO games ({', '.join(GAME_COLS)}) VALUES ({', '.join('?' * len(GAME_COLS))}) "
+                   "ON CONFLICT (game_id) DO NOTHING", tuple(row))
+            added = 0
+            for game_id, user_id, choice, correct in old["picks"]:
+                cur = ex("INSERT INTO picks (game_id, user_id, choice, correct) VALUES (?, ?, ?, ?) "
+                         "ON CONFLICT (game_id, user_id) DO NOTHING", (game_id, user_id, choice, correct))
+                added += cur.rowcount
+            return {"graded_picks": len(old["picks"]), "added": added}
+        return await self.run(write)
+
