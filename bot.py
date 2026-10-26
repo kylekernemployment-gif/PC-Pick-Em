@@ -72,10 +72,6 @@ LIVE_BOARD_EVERY_SECS = 10 * 60
 POINTS_PER_WIN = int(os.getenv("POINTS_PER_WIN", "100"))
 POST_HOURS_BEFORE = float(os.getenv("POST_HOURS_BEFORE", "12"))
 INCLUDE_PRESEASON = _env_bool("INCLUDE_PRESEASON", "true")
-# Old database to copy points and records from, once it's reachable (e.g. Neon after a quota lock).
-IMPORT_DATABASE_URL = (os.getenv("IMPORT_DATABASE_URL", "").strip().removeprefix("psql").strip().strip("'\"")
-                       or None)
-IMPORT_RETRY_SECS = 30 * 60
 # A DB_PATH on a persistent disk (SQLite) takes priority over a DATABASE_URL (Postgres).
 DB_PATH = os.getenv("DB_PATH", "").strip() or None
 DATABASE_URL = None if DB_PATH else _database_url()
@@ -111,7 +107,6 @@ class PickEmBot(commands.Bot):
         self.last_board_text: dict[str, str] = {}
         self.bg_tasks: set[asyncio.Task] = set()
         self.polls_upgraded = False
-        self.last_import_try = 0.0
 
     async def setup_hook(self) -> None:
         await self.db.init()
@@ -308,7 +303,7 @@ async def reaction_picks(msg: discord.Message) -> dict[int, set[int]]:
 
 @tasks.loop(seconds=60)
 async def ticker() -> None:
-    for step in (season_reset, import_old_data, weekly_reset, upgrade_reaction_polls, refresh_schedule,
+    for step in (season_reset, winrate_reset, weekly_reset, upgrade_reaction_polls, refresh_schedule,
                  post_due_polls,
                  lock_started_games, resolve_finished_games,
                  update_live_leaderboard, self_ping):
@@ -512,25 +507,13 @@ async def season_reset() -> None:
     log.info("Season reset for %s: PC Points and records cleared", SEASON)
 
 
-async def import_old_data() -> None:
-    """Copy points, win/loss records and polls from IMPORT_DATABASE_URL once it can be reached.
-    Retries every 30 minutes (Neon refuses connections while its free quota is used up)."""
-    if not IMPORT_DATABASE_URL or await bot.db.get_setting("import_done"):
+async def winrate_reset() -> None:
+    """One-time: clear everyone's win/loss records (fresh start after the move off Neon)."""
+    if await bot.db.get_setting("winrate_reset:2026-10-26"):
         return
-    if time.time() - bot.last_import_try < IMPORT_RETRY_SECS:
-        return
-    bot.last_import_try = time.time()
-    try:
-        stats = await bot.db.import_from(IMPORT_DATABASE_URL, week_id(datetime.now(EASTERN)))
-    except Exception as e:
-        text = str(e)
-        reason = ("Neon is still locked (free quota used up)" if "quota" in text.lower()
-                  else text.splitlines()[0][:200] if text else type(e).__name__)
-        log.warning("Old database not reachable yet: %s. Will retry in 30 min.", reason)
-        return
-    await bot.db.set_setting("import_done", datetime.now(EASTERN).isoformat())
-    log.info("Imported old data: %s", stats)
-    await refresh_board_soon()
+    await bot.db.set_setting("winrate_reset:2026-10-26", datetime.now(EASTERN).isoformat())
+    await bot.db.clear_graded_picks()
+    log.info("Win/loss records cleared")
 
 
 async def weekly_reset() -> None:
