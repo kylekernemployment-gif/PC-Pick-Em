@@ -149,6 +149,14 @@ This is on by default (`EIGHTYTWO=false` turns it off). It's for YouTube Members
 
 A player's stats are his per-game averages **with that team in that decade**: every season there, weighted by games played. His **awards** come from the same stint (MVP, DPOY, All-NBA, All-Defense, All-Star, ROY, 6MOY, MIP). Awards show while drafting in Classic, and they count toward the score: defensive honors boost team defense, and MVP/All-NBA/All-Star honors give a smaller overall boost.
 
+**How lineups are scored:**
+- **Shooting counts.** FG% and 3P% are judged against each player's era and shown on today's scale (46% FG, 36% 3P). Efficient scorers get more credit for their points.
+- **Spacing:** two or more players who take 1+ threes a game at under 32% are a real red flag ("Spacing").
+- **Efficiency:** a team shooting under 44% FG loses some ground, more the lower it goes ("Efficiency").
+- **Defensive honors count by position.** All-Defense and DPOY boost perimeter defense for guards and wings, and rim protection for bigs.
+- **Star power:** MVPs, All-NBA and All-Star selections add value even without huge stats. A lineup with **4+ superstars** (about first-team All-NBA level with that team) is an automatic 82-0.
+- **Weakness labels** only name a real problem. A category that's just the team's lowest, while still strong, isn't called out.
+
 You get **one team skip and one decade skip** per game. **🔀 Move player** lets you shift a drafted player to another position he's played, or swap two players who can play each other's spots. The draft list also includes players who'd fit after a shift, and picking one shows a button like `SG (Bryant → SF)` that makes the move for you. Old franchises count as today's team, so the 1990s Thunder are the Seattle SuperSonics.
 
 After 5 picks the bot rates the lineup on era-adjusted scoring, rebounding, playmaking, steals and blocks. It then shows a projected record, a grade, the best pick and the biggest weakness. Going **82-0 earns +200 PC Points in Classic or +300 in Hoop IQ**, once per member per day (either mode) (`EIGHTYTWO_POINTS_CLASSIC`, `EIGHTYTWO_POINTS_HOOPIQ`). Set `EIGHTYTWO_CHANNEL_ID` to limit games to one channel.

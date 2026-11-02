@@ -69,6 +69,7 @@ def season_label(season: int) -> str:
 def main(src: Path, out: Path) -> None:
     # League averages per season (per team per game) for era adjustment.
     lg: dict[int, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+    shots: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))  # league makes/attempts
     names: dict[tuple[int, str], str] = {}
     for r in csv.DictReader(open(src / "Team Stats Per Game.csv")):
         if r["lg"] != "NBA" or r["team"] == "League Average":
@@ -78,11 +79,18 @@ def main(src: Path, out: Path) -> None:
             v = f(r[f"{k}_per_game"])
             if v is not None:
                 lg[s][k].append(v)
+        for k in ("fg", "fga", "x3p", "x3pa"):
+            shots[s][k] += f(r[f"{k}_per_game"]) or 0.0
     for r in csv.DictReader(open(src / "Team Abbrev.csv")):
         if r["lg"] == "NBA":
             names[(int(r["season"]), r["abbreviation"])] = r["team"]
     lg_avg = {s: {k: sum(v) / len(v) for k, v in d.items() if v} for s, d in lg.items()}
     base = {k: sum(lg_avg[s][k] for s in range(2001, 2021)) / 20 for k in STATS}  # 2000s-2010s baseline
+    # League shooting each season; a player's FG%/3P% is judged against his own era,
+    # then expressed on today's scale (46% FG, 36% 3P).
+    lg_fg = {s: d["fg"] / d["fga"] for s, d in shots.items() if d["fga"]}
+    lg_3p = {s: d["x3p"] / d["x3pa"] for s, d in shots.items() if d["x3pa"] > 0}
+    MODERN_FG, MODERN_3P = 0.46, 0.36
 
     rows = [r for r in csv.DictReader(open(src / "Player Per Game.csv"))
             if r["lg"] == "NBA" and r["team"] in FRANCHISE and 1961 <= int(r["season"])]
@@ -156,7 +164,12 @@ def main(src: Path, out: Path) -> None:
             league = lg_avg[s].get(k) or base[k]  # no league stl/blk before 1974 -> no adjustment
             adj[k] = raw[k] * base[k] / league
         key = (FRANCHISE[r["team"]], decade_of(s))
+        fga, fgm = (f(r["fga_per_game"]) or 0) * g, (f(r["fg_per_game"]) or 0) * g
+        tpa, tpm = (f(r["x3pa_per_game"]) or 0) * g, (f(r["x3p_per_game"]) or 0) * g
         groups[key][r["player_id"]].append({
+            "fga": fga, "fgm": fgm, "tpa": tpa if s in lg_3p else 0.0, "tpm": tpm if s in lg_3p else 0.0,
+            "fg_rel": (fgm / fga - lg_fg[s]) if fga and s in lg_fg else 0.0,
+            "tp_rel": (tpm / tpa - lg_3p[s]) if tpa and s in lg_3p else 0.0,
             "name": r["player"], "season": s, "g": g, "raw": raw, "adj": adj, "est": est,
             "team_name": names.get((s, r["team"]), r["team"]),
         })
@@ -176,12 +189,21 @@ def main(src: Path, out: Path) -> None:
             first, last = min(x["season"] for x in seasons), max(x["season"] for x in seasons)
             span = season_label(first) if first == last else f"{first - 1}-{str(last)[-2:]}"
             pos = "/".join(p for p in order if p in career_pos[pid])
+            fga = sum(x["fga"] for x in seasons)
+            tpa = sum(x["tpa"] for x in seasons)
+            fg_pct = sum(x["fgm"] for x in seasons) / fga if fga else None
+            fg_adj = MODERN_FG + sum(x["fg_rel"] * x["fga"] for x in seasons) / fga if fga else None
+            # 3P% only counts with real volume (25+ attempts); before 1979-80 there was no 3-point line.
+            tp_pct = sum(x["tpm"] for x in seasons) / tpa if tpa >= 25 else None
+            tp_adj = MODERN_3P + sum(x["tp_rel"] * x["tpa"] for x in seasons) / tpa if tpa >= 25 else None
             entries.append((games, [
                 seasons[0]["name"], pos, span,
                 *[round(avg("raw", k), 1) for k in STATS],
                 *[round(avg("adj", k), 2) for k in STATS],
                 int(any(x["est"] for x in seasons)), int(games),
                 len({x["season"] for x in seasons}), dict(awards.get((pid, fr, dec), {})),
+                *[round(v, 3) if v is not None else None for v in (fg_pct, tp_pct, fg_adj, tp_adj)],
+                round(tpa / games, 1), round(fga / games, 1),
             ]))
         entries.sort(key=lambda e: -e[0])
         if len(entries) < 5:
@@ -198,7 +220,8 @@ def main(src: Path, out: Path) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "fields": ["name", "pos", "season", "pts", "reb", "ast", "stl", "blk",
-                   "adj_pts", "adj_reb", "adj_ast", "adj_stl", "adj_blk", "est", "games", "seasons", "awards"],
+                   "adj_pts", "adj_reb", "adj_ast", "adj_stl", "adj_blk", "est", "games", "seasons", "awards",
+                   "fg_pct", "tp_pct", "fg_adj", "tp_adj", "tpa", "fga"],
         "decades": DECADES,
         "teams": teams,
         "source": "Basketball-Reference via github.com/sumitrodatta/bball-reference-datasets",

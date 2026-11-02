@@ -35,7 +35,7 @@ TARGETS = {"pts": 125, "reb": 46, "ast": 30, "stl": 8.5, "blk": 7.5}
 WEIGHTS = {"pts": 0.32, "reb": 0.20, "ast": 0.20, "stl": 0.12, "blk": 0.16}
 # Rating -> wins (piecewise linear). Calibrated by simulation: random picks average ~25 wins,
 # sensible picks ~62, and only great, balanced lineups reach 82-0.
-WIN_CURVE = [(0.08, 0), (0.236, 25), (0.770, 62), (0.903, 82)]
+WIN_CURVE = [(0.077, 0), (0.226, 25), (0.783, 62), (0.93, 82)]
 MAX_OPTIONS = 25  # Discord select menu limit
 EASTERN = ZoneInfo("America/New_York")
 
@@ -125,7 +125,19 @@ def spin(rng: random.Random, lineup: dict[str, dict],
 # overall bonus. Kept modest so the stats still decide most of the record.
 STAR_WEIGHTS = {"mvp": 3.0, "nba1": 1.5, "nba2": 1.0, "nba3": 0.6, "as": 0.3}
 DEF_WEIGHTS = {"dpoy": 2.0, "def1": 1.0, "def2": 0.6}
-STAR_BONUS, DEF_BONUS = 0.004, 0.25  # rating per star point; stl & blk per defense point
+STAR_BONUS = 0.010    # rating per star point (name value: MVPs, All-NBA, All-Star with that team)
+DEF_BONUS = 0.25      # steals/blocks credit per defense point (All-Defense, DPOY)
+SUPERSTAR = 1.75      # star rate of a perennial All-NBA 1st-team type player
+SUPERSTARS_FOR_82 = 4 # a lineup this stacked is an automatic 82-0
+# Defensive honors count where the player lines up: guards and wings defend the
+# perimeter, bigs protect the rim.
+PERIMETER_SHARE = {"PG": 1.0, "SG": 1.0, "SF": 1.0, "PF": 0.4, "C": 0.2}
+RIM_SHARE = {"PG": 0.1, "SG": 0.2, "SF": 0.5, "PF": 1.0, "C": 1.0}
+# Shooting, on today's scale (each player's era-adjusted percentages).
+LEAGUE_FG, LEAGUE_3P = 0.46, 0.36
+TEAM_FG_FLAG = 0.44     # below this the team's shooting starts to hurt
+BAD_3P, SHOOTER_3PA = 0.32, 1.0  # a "bad shooter" takes 1+ threes a game at under 32%
+WEAKNESS_FLOOR = 0.85   # a category only counts as a weakness below 85% of elite
 
 
 def star_rate(p: dict) -> float:
@@ -138,8 +150,24 @@ def def_rate(p: dict) -> float:
     return min(sum(w * a.get(k, 0) for k, w in DEF_WEIGHTS.items()) / max(p.get("seasons", 1), 1), 3.0)
 
 
-def player_value(p: dict) -> float:
-    stats = {c: p[f"adj_{c}"] + (DEF_BONUS * def_rate(p) if c in ("stl", "blk") else 0) for c in CATS}
+def scoring_efficiency(p: dict) -> float:
+    """Points are worth more from efficient scorers (KD on the Warriors), less from chuckers."""
+    fg = p.get("fg_adj")
+    return 1.0 if fg is None else max(0.88, min(1.15, 1 + 1.5 * (fg - LEAGUE_FG)))
+
+
+def player_stats(p: dict, pos: str | None = None) -> dict[str, float]:
+    """A player's contribution to the team totals, with efficiency and defensive honors."""
+    stats = {c: p[f"adj_{c}"] for c in CATS}
+    stats["pts"] *= scoring_efficiency(p)
+    d = def_rate(p) * DEF_BONUS
+    stats["stl"] += d * (PERIMETER_SHARE[pos] if pos else 0.6)
+    stats["blk"] += d * (RIM_SHARE[pos] if pos else 0.6)
+    return stats
+
+
+def player_value(p: dict, pos: str | None = None) -> float:
+    stats = player_stats(p, pos)
     return sum(WEIGHTS[c] * stats[c] / TARGETS[c] for c in CATS) + STAR_BONUS * star_rate(p)
 
 
@@ -171,31 +199,69 @@ def grade_for(wins: int) -> str:
     return "F"
 
 
+def shooting_flags(lineup: dict[str, dict]) -> tuple[float, float, float, list[str]]:
+    """(team FG%, efficiency penalty, spacing penalty, bad shooters) on today's scale."""
+    shooters = [p for p in lineup.values() if p.get("fg_adj") is not None and p.get("fga")]
+    attempts = sum(p["fga"] for p in shooters)
+    team_fg = sum(p["fg_adj"] * p["fga"] for p in shooters) / attempts if attempts else LEAGUE_FG
+    efficiency = max(0.0, TEAM_FG_FLAG - team_fg) * 2.0  # gentle: 40% FG costs ~0.08
+    bad = [p for p in lineup.values()
+           if p.get("tp_adj") is not None and (p.get("tpa") or 0) >= SHOOTER_3PA and p["tp_adj"] < BAD_3P]
+    misses = sum(LEAGUE_3P - p["tp_adj"] for p in bad)
+    # One poor shooter is survivable; two or more clog the floor.
+    spacing = misses * (0.45 if len(bad) >= 2 else 0.15)
+    return team_fg, efficiency, spacing, [p["name"] for p in bad]
+
+
 def lineup_rating(lineup: dict[str, dict]) -> tuple[float, dict[str, float], dict[str, float]]:
     """(rating, category scores, era-adjusted team totals)."""
-    totals = {c: sum(p[f"adj_{c}"] for p in lineup.values()) for c in CATS}
-    defense = sum(def_rate(p) for p in lineup.values()) * DEF_BONUS
-    scored = {c: totals[c] + (defense if c in ("stl", "blk") else 0) for c in CATS}
-    scores = {c: min(scored[c] / TARGETS[c], 1.15) for c in CATS}
+    totals = {c: 0.0 for c in CATS}
+    for pos, p in lineup.items():
+        for c, v in player_stats(p, pos).items():
+            totals[c] += v
+    scores = {c: min(totals[c] / TARGETS[c], 1.15) for c in CATS}
     rating = sum(WEIGHTS[c] * scores[c] for c in CATS) + STAR_BONUS * sum(star_rate(p) for p in lineup.values())
     weakest = min(scores, key=scores.get)
     if scores[weakest] < 0.7:  # a glaring hole drags the whole team down
         rating -= 0.35 * (0.7 - scores[weakest])
+    _, efficiency, spacing, _ = shooting_flags(lineup)
+    rating -= efficiency + spacing
     return rating, scores, totals
+
+
+def weakness(lineup: dict[str, dict], scores: dict[str, float]) -> str | None:
+    """The team's real problem, if it has one. A category that's merely its lowest (38 rebounds
+    when elite is 46) isn't a weakness; shooting red flags count too."""
+    team_fg, efficiency, spacing, bad = shooting_flags(lineup)
+    issues = {CAT_NAMES[c]: WEAKNESS_FLOOR - v for c, v in scores.items() if v < WEAKNESS_FLOOR}
+    if spacing >= 0.03:
+        issues[f"Spacing ({', '.join(n.split()[-1] for n in bad)} can't hit 3s)"] = spacing * 3
+    if efficiency > 0:
+        issues[f"Efficiency (team shoots {team_fg:.0%} FG)"] = efficiency * 3
+    return max(issues, key=issues.get) if issues else None
+
+
+def superstars(lineup: dict[str, dict]) -> int:
+    return sum(star_rate(p) >= SUPERSTAR for p in lineup.values())
 
 
 def evaluate(lineup: dict[str, dict]) -> dict:
     rating, scores, totals = lineup_rating(lineup)
-    wins = wins_for(rating)
-    best = max(lineup.items(), key=lambda kv: player_value(kv[1]))
+    wins = 82 if superstars(lineup) >= SUPERSTARS_FOR_82 else wins_for(rating)
+    best = max(lineup.items(), key=lambda kv: player_value(kv[1], kv[0]))
     return {"wins": wins, "losses": 82 - wins, "grade": grade_for(wins), "totals": totals,
-            "best": best, "weakness": CAT_NAMES[min(scores, key=scores.get)] if wins < 82 else None}
+            "best": best, "weakness": None if wins == 82 else (weakness(lineup, scores) or "No glaring weakness")}
 
 
 def stat_line(p: dict) -> str:
     est = "*" if p.get("est") else ""
-    return (f"{p['pts']:g} pts · {p['reb']:g} reb · {p['ast']:g} ast · "
+    line = (f"{p['pts']:g} pts · {p['reb']:g} reb · {p['ast']:g} ast · "
             f"{p['stl']:g}{est} stl · {p['blk']:g}{est} blk")
+    if p.get("fg_pct") is not None:
+        line += f" · {p['fg_pct']:.0%} FG"
+    if p.get("tp_pct") is not None and (p.get("tpa") or 0) >= SHOOTER_3PA:
+        line += f" · {p['tp_pct']:.0%} 3P"
+    return line
 
 
 # ---------------------------------------------------------------------------

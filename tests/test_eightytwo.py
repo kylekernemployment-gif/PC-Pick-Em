@@ -74,7 +74,7 @@ def test_full_game_and_scoring():
 
 
 def test_win_curve_and_grades():
-    assert E.wins_for(0.05) == 0 and E.wins_for(2) == 82 and E.wins_for(0.236) == 25
+    assert E.wins_for(0.05) == 0 and E.wins_for(2) == 82 and E.wins_for(0.226) == 25
     assert E.grade_for(82).startswith("S") and E.grade_for(70) == "A" and E.grade_for(10) == "F"
 
 
@@ -119,3 +119,31 @@ def test_82_0_reward_by_mode_once_a_day(tmp_path):
         other = types.SimpleNamespace(id=8)
         assert "+300" in await cog.reward(other, perfect, "hoopiq")
     asyncio.run(go())
+
+
+def test_scoring_rules_from_feedback():
+    D = E.data()
+    find = lambda t, d, n: next(p for p in D["teams"][t]["decades"][d]["players"] if p["name"] == n)
+    stacked = {"PG": find("CLE", "2010s", "LeBron James"), "SG": find("LAL", "2000s", "Kobe Bryant"),
+               "SF": find("BOS", "1980s", "Larry Bird"), "PF": find("CHI", "1990s", "Michael Jordan"),
+               "C": find("LAL", "2000s", "Shaquille O'Neal")}
+    assert E.evaluate(stacked)["wins"] == 82                       # superstar override
+    good = {"PG": find("GSW", "2010s", "Stephen Curry"), "SG": find("SAS", "2000s", "Manu Ginóbili"),
+            "SF": find("GSW", "2010s", "Kevin Durant"), "PF": find("SAS", "2000s", "Tim Duncan"),
+            "C": find("DET", "2000s", "Ben Wallace")}
+    base = E.evaluate(good)["wins"]
+    bricks = dict(good, SG={**find("DET", "2010s", "Josh Smith"), "positions": ["SG"]},
+                  SF={**find("DET", "1990s", "Jerry Stackhouse"), "positions": ["SF"]})
+    r = E.evaluate(bricks)
+    assert r["wins"] < base and r["weakness"].startswith("Spacing")
+    cold = {pos: {**p, "fg_adj": 0.385} for pos, p in good.items()}
+    r = E.evaluate(cold)
+    assert r["wins"] < base and r["weakness"].startswith("Efficiency")
+    rodman = {"PG": find("PHO", "2000s", "Steve Nash"), "SG": find("MIA", "2000s", "Dwyane Wade"),
+              "SF": find("BOS", "2000s", "Paul Pierce"), "PF": find("CHI", "1990s", "Dennis Rodman"),
+              "C": find("SAS", "2010s", "LaMarcus Aldridge")}
+    assert E.evaluate(rodman)["weakness"] != "Rebounding"
+    # defensive honors count by position: a guard's All-Defense helps perimeter D more than rim protection
+    gp = find("SEA", "1990s", "Gary Payton") if "SEA" in D["teams"] else find("OKC", "1990s", "Gary Payton")
+    s = E.player_stats(gp, "PG")
+    assert s["stl"] - gp["adj_stl"] > s["blk"] - gp["adj_blk"]
