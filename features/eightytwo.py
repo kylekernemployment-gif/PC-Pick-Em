@@ -611,8 +611,8 @@ class EightyTwoZero(commands.Cog):
         self.allowed_roles, self.members_label = allowed_roles, members_label
         self.channel_id = env_id("EIGHTYTWO_CHANNEL_ID")
         # PC Points for going 82-0, by mode (Hoop IQ hides stats, so it pays more).
-        self.reward_points = {"classic": int(os.getenv("EIGHTYTWO_POINTS_CLASSIC", "200")),
-                              "hoopiq": int(os.getenv("EIGHTYTWO_POINTS_HOOPIQ", "300"))}
+        self.reward_points = {"classic": int(os.getenv("EIGHTYTWO_POINTS_CLASSIC", "150")),
+                              "hoopiq": int(os.getenv("EIGHTYTWO_POINTS_HOOPIQ", "200"))}
         self.games: dict[int, Game] = {}
 
     async def cog_load(self) -> None:
