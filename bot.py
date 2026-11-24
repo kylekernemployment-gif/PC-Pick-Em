@@ -116,6 +116,7 @@ class PickEmBot(commands.Bot):
         self.http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
         self.nba = NBAClient(self.http_session, INCLUDE_PRESEASON)
         self.add_view(PollView())  # team buttons keep working after restarts
+        self.add_view(CloseTicketView())  # ticket close buttons too
         await self.load_features()
         await self.sync_commands()
         if not ticker.is_running():
@@ -602,6 +603,126 @@ async def winrate_reset() -> None:
     log.info("Win/loss records cleared")
 
 
+# ---------------------------------------------------------------------------
+# Winner tickets: the weekly top 3 each get a private channel with the host
+# ---------------------------------------------------------------------------
+
+TICKET_CATEGORY_NAME = os.getenv("TICKET_CATEGORY_NAME", "🏆 Winner Tickets")
+TICKET_HOST = os.getenv("TICKET_HOST", "key254_")  # who runs the tickets: username, display name or user ID
+PLACES = {1: "1st", 2: "2nd", 3: "3rd"}
+TICKET_ACCESS = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True,
+                                            attach_files=True, embed_links=True)
+
+
+class CloseTicketView(discord.ui.View):
+    """🔒 button on each ticket; registered at startup so it keeps working after restarts."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Close ticket", emoji="🔒", style=discord.ButtonStyle.danger, custom_id="ticket:close")
+    async def close(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        channel = interaction.channel
+        if getattr(getattr(channel, "category", None), "name", None) != TICKET_CATEGORY_NAME:
+            await interaction.response.send_message("This isn't a ticket channel.", ephemeral=True)
+            return
+        host = await ticket_host(interaction.guild)
+        if not (is_mod(interaction.user) or (host and interaction.user.id == host.id)):
+            await interaction.response.send_message(f"Only {host.display_name if host else 'the host'} or a "
+                                                    f"{MOD_ROLE} can close this ticket.", ephemeral=True)
+            return
+        await interaction.response.send_message("🔒 Closing this ticket in 5 seconds…")
+        await asyncio.sleep(5)
+        await channel.delete(reason=f"Ticket closed by {interaction.user}")
+
+
+async def ticket_host(guild: discord.Guild) -> discord.Member | None:
+    """The person every winner ticket is opened with (TICKET_HOST), falling back to the server owner."""
+    if TICKET_HOST.isdigit():
+        member = guild.get_member(int(TICKET_HOST))
+        if member is None:
+            try:
+                member = await guild.fetch_member(int(TICKET_HOST))
+            except discord.HTTPException:
+                member = None
+        return member or guild.owner
+    if not guild.chunked:
+        await guild.chunk()
+    member, _ = find_member(guild, TICKET_HOST)
+    return member or guild.owner
+
+
+async def ticket_category(guild: discord.Guild) -> discord.CategoryChannel:
+    category = discord.utils.get(guild.categories, name=TICKET_CATEGORY_NAME)
+    if category:
+        return category
+    return await guild.create_category(TICKET_CATEGORY_NAME, reason="Winner tickets", overwrites={
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, manage_channels=True, send_messages=True),
+    })
+
+
+def ordinal(n: int) -> str:
+    return PLACES.get(n) or f"{n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
+async def open_ticket(guild: discord.Guild, member: discord.Member, place: int, points: int,
+                      which_week: str = "last week's") -> discord.TextChannel | None:
+    """One private winner ticket shared by the member and the host. None if it's already open."""
+    host = await ticket_host(guild)
+    category = await ticket_category(guild)
+    name = f"{ordinal(place)}-place-{member.name}"[:95].lower()
+    if discord.utils.get(category.text_channels, name=name):
+        return None
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True,
+                                              manage_channels=True, embed_links=True, attach_files=True),
+        member: TICKET_ACCESS,
+    }
+    if host:
+        overwrites[host] = TICKET_ACCESS
+    channel = await guild.create_text_channel(
+        name, category=category, overwrites=overwrites,
+        topic=f"{ordinal(place)} place, {which_week} PC Points Leaderboard ({points:,} PC Points)",
+        reason="Weekly leaderboard winner ticket")
+    await channel.send(
+        f"{member.mention}" + (f" {host.mention}" if host else "") + "\n\n"
+        f"🏆 **Congratulations!** You placed **{ordinal(place)}** in {which_week} PC Points Leaderboard "
+        f"with **{points:,} PC Points**.\n\n"
+        "Please submit a **30-second clip** for **The Panel** to react to by the end of the week. "
+        "Upload it here, or paste a link if the file is too big.",
+        view=CloseTicketView(), allowed_mentions=discord.AllowedMentions(users=True))
+    return channel
+
+
+async def find_in_guild(guild: discord.Guild, user_id: int) -> discord.Member | None:
+    member = guild.get_member(user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.HTTPException:
+            return None
+    return member
+
+
+async def open_winner_tickets(rows: list[tuple[int, int]], which_week: str = "last week's") -> list[str]:
+    """Open one private ticket each for 1st, 2nd and 3rd, shared with the host. Returns what was opened."""
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None or not rows:
+        return []
+    opened = []
+    for place, (user_id, points) in enumerate(rows[:3], 1):
+        member = await find_in_guild(guild, user_id)
+        if member is None:
+            log.warning("Winner ticket skipped: %s (%s place) is no longer in the server", user_id, ordinal(place))
+            continue
+        if await open_ticket(guild, member, place, points, which_week):
+            opened.append(f"{ordinal(place)}: {member} ({points:,})")
+    log.info("Opened winner tickets: %s", "; ".join(opened) or "none")
+    return opened
+
+
 async def weekly_reset() -> None:
     """Every Sunday at 12:00am ET: post last week's final standings, then reset weekly PC Points
     (season points keep counting)."""
@@ -623,6 +744,12 @@ async def weekly_reset() -> None:
             await channel.send(embed=final, allowed_mentions=NO_PINGS)
         except discord.HTTPException as e:
             log.warning("Couldn't post weekly standings: %r", e)
+    standings = await bot.db.leaderboard(50)  # saved so /openticket can reach 4th, 5th, ... later
+    await bot.db.set_setting("last_week_standings", json.dumps(standings))
+    try:  # the week's top 3 get a ticket with the host before the points are wiped
+        await open_winner_tickets(standings)
+    except Exception:
+        log.exception("Couldn't open winner tickets (does the bot have Manage Channels?)")
     await bot.db.reset_weekly_points()
     await refresh_board_soon()
     log.info("Weekly reset done (%s)", this_week)
@@ -801,6 +928,57 @@ async def pickemstatus(interaction: discord.Interaction) -> None:
     if not games:
         lines.append("No upcoming games loaded. If there are games today, check the Render logs for schedule errors.")
     await interaction.response.send_message("\n".join(lines)[:1990], ephemeral=True)
+
+
+@bot.tree.command(name="winnertickets", description="Open winner tickets now for this week's top 3 (for testing)",
+                  guild=discord.Object(id=GUILD_ID))
+@app_commands.checks.has_role(MOD_ROLE)
+async def winnertickets(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    rows = await bot.db.leaderboard(10)
+    if not rows:
+        await interaction.followup.send("Nobody has weekly PC Points yet, so there's no top 3.", ephemeral=True)
+        return
+    try:
+        opened = await open_winner_tickets(rows, which_week="this week's")
+    except discord.Forbidden:
+        await interaction.followup.send("⛔ I need the **Manage Channels** permission to open tickets.", ephemeral=True)
+        return
+    await interaction.followup.send("🏆 Opened: " + (", ".join(opened) if opened else "none (winners not found)"),
+                                    ephemeral=True)
+
+
+@bot.tree.command(name="openticket", description="Open a winner ticket for any place on last week's leaderboard",
+                  guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(place="Place on last week's final leaderboard (e.g. 4 for 4th)")
+@app_commands.checks.has_role(MOD_ROLE)
+async def openticket(interaction: discord.Interaction, place: app_commands.Range[int, 1, 50]) -> None:
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    saved = await bot.db.get_setting("last_week_standings")
+    standings = json.loads(saved) if saved else []
+    if place > len(standings):
+        await interaction.followup.send(
+            f"Last week's leaderboard doesn't have a {ordinal(place)} place." if standings else
+            "I don't have last week's final standings yet. They're saved at the Sunday 12am reset.", ephemeral=True)
+        return
+    user_id, points = standings[place - 1]
+    member = await find_in_guild(interaction.guild, user_id)
+    if member is None:
+        await interaction.followup.send(f"{ordinal(place)} place (<@{user_id}>) is no longer in the server. "
+                                        f"Try `/openticket {place + 1}`.", ephemeral=True)
+        return
+    try:
+        channel = await open_ticket(interaction.guild, member, place, points)
+    except discord.Forbidden:
+        await interaction.followup.send("⛔ I need the **Manage Channels** permission to open tickets.", ephemeral=True)
+        return
+    if channel is None:
+        await interaction.followup.send(f"{member.mention} already has an open {ordinal(place)}-place ticket.",
+                                        ephemeral=True)
+        return
+    log.info("%s opened a %s place ticket for %s", interaction.user, ordinal(place), member)
+    await interaction.followup.send(f"🏆 Opened {channel.mention} for {member.mention} "
+                                    f"({ordinal(place)}, {points:,} PC Points).", ephemeral=True)
 
 
 async def give_points(giver: discord.abc.User, member: discord.Member, amount: int) -> str:

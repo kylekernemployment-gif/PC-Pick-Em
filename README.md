@@ -28,9 +28,13 @@ Each extra feature turns on only when its settings are added in Render. See [Oth
 | `!winrate [@member]` | Pick'em record, for example `55% win rate, 55-45 record`. Needs the **YouTube Member** or **Lead Moderator** role. |
 | `/pickemstatus` | **Lead Moderator only.** Lists the next games and when each poll goes up (private reply). |
 | `/givepcpoints @member amount` | **Lead Moderator only.** Gives PC Points. A negative amount takes them away. `!givepcpoints` works too. |
+| `/openticket place` | **Lead Moderator only.** Opens a winner ticket for any place on last week's final leaderboard (e.g. `4` for 4th), for when a top-3 winner doesn't respond. |
+| `/winnertickets` | **Lead Moderator only.** Opens tickets for this week's current top 3 right now (for testing). |
 | `!pickemhelp` | Lists the commands |
 
 **Two leaderboards.** `#leaderboard` holds two live messages: the **Season** leaderboard, which never resets during the season, and the **Weekly** leaderboard, which resets every **Sunday at 12:00am ET**. When the week resets, the final weekly Top 10 is posted in the pick'em channel. Every point earned counts toward both. `!pcpoints` shows both totals, and `!leaderboard` shows both Top 10s.
+
+**Winner tickets:** at the Sunday 12am reset the bot opens a private ticket for each of last week's top 3 (in a **🏆 Winner Tickets** category, visible only to the winner and the host) asking for a 30-second clip for The Panel. Only the host or a Lead Moderator can close a ticket. The bot needs the **Manage Channels** permission. `TICKET_HOST` (default `key254_`) sets who's added to each ticket.
 
 If `LEADERBOARD_CHANNEL_ID` is set, the bot also keeps **one live Top 25 message** in that channel. It updates after every graded game, every `/givepcpoints`, and every 10 minutes.
 
